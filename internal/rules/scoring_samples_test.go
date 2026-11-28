@@ -1,6 +1,7 @@
 package rules_test
 
 import (
+	"cmp"
 	"slices"
 	"strings"
 	"testing"
@@ -718,13 +719,7 @@ func assertExactFans(t *testing.T, got []rules.Fan, want []fanExpectation) {
 	}
 	wantCopy := slices.Clone(want)
 	sortExpect := func(a, b fanExpectation) int {
-		if a.id < b.id {
-			return -1
-		}
-		if a.id > b.id {
-			return 1
-		}
-		return a.points - b.points
+		return cmp.Or(cmp.Compare(a.id, b.id), cmp.Compare(a.points, b.points))
 	}
 	slices.SortFunc(gotPairs, sortExpect)
 	slices.SortFunc(wantCopy, sortExpect)

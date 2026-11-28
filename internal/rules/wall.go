@@ -67,11 +67,7 @@ func (w *Wall) Remaining() int {
 
 // DrawableRemaining returns the public count of tiles that can still be drawn (Remaining - 16).
 func (w *Wall) DrawableRemaining() int {
-	rem := w.Remaining() - ReserveWallTiles
-	if rem < 0 {
-		return 0
-	}
-	return rem
+	return max(0, w.Remaining()-ReserveWallTiles)
 }
 
 // Draw removes and returns the next drawable tile from the wall.
