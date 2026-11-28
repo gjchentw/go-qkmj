@@ -35,11 +35,13 @@ const (
 	SelfDeclareSelfWin
 	SelfDeclareConcealedKong
 	SelfDeclareAddedKong
+	SelfDeclareRiichi
+	SelfDeclareNineTerminals
 )
 
 // Valid reports whether k is a valid self-declaration kind.
 func (k SelfDeclareKind) Valid() bool {
-	return k >= SelfDeclarePass && k <= SelfDeclareAddedKong
+	return k >= SelfDeclarePass && k <= SelfDeclareNineTerminals
 }
 
 // ClaimKind enumerates responses inside a claim arbitration window,
@@ -112,9 +114,9 @@ func (a PlayerAction) validateSelfDeclare() error {
 	if !a.SelfDeclare.Valid() {
 		return fmt.Errorf("self declare %d: %w", a.SelfDeclare, ErrInvalidAction)
 	}
-	if a.SelfDeclare == SelfDeclareConcealedKong || a.SelfDeclare == SelfDeclareAddedKong {
+	if a.SelfDeclare == SelfDeclareConcealedKong || a.SelfDeclare == SelfDeclareAddedKong || a.SelfDeclare == SelfDeclareRiichi {
 		if !a.Tile.Valid() || a.Tile.IsFlower() {
-			return fmt.Errorf("kong tile %v: %w", a.Tile, ErrInvalidAction)
+			return fmt.Errorf("self declare tile %v: %w", a.Tile, ErrInvalidAction)
 		}
 	}
 	return nil

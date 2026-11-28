@@ -78,6 +78,69 @@ type MatchEngine struct {
 	dealerStreak int
 	balances     [5]int
 	hand         *HandEngine
+	cycle        roundCycleTracker
+}
+
+type roundCycleTracker struct {
+	cycleNumber int
+	elapsed     time.Duration
+	stats       [5]SeatCycleStats
+}
+
+func (t *roundCycleTracker) resetAll() {
+	t.cycleNumber = 1
+	t.elapsed = 0
+	t.stats = [5]SeatCycleStats{}
+}
+
+func (t *roundCycleTracker) addThinkTime(d time.Duration) {
+	t.elapsed += d
+}
+
+func (t *roundCycleTracker) recordSettlement(reason HandEndReason, score *ScoreResult) {
+	if reason.IsDraw() {
+		for _, s := range AllSeats {
+			t.stats[s].Draws++
+		}
+		return
+	}
+	if reason != HandEndWin || score == nil {
+		return
+	}
+	for _, s := range AllSeats {
+		t.stats[s].HandsPlayed++
+		t.stats[s].NetDelta += score.Deltas[s]
+	}
+	switch score.WinKind {
+	case WinSelfDraw, WinEightImmortals:
+		if score.Winner.Valid() {
+			t.stats[score.Winner].SelfDrawWins++
+		}
+	case WinDiscard, WinRobKong, WinSevenRobOne:
+		if score.Winner.Valid() {
+			t.stats[score.Winner].DiscardWins++
+		}
+		if score.Payer.Valid() {
+			t.stats[score.Payer].DealIns++
+		}
+	case WinUnknown:
+	}
+}
+
+func (t *roundCycleTracker) completeCycle() RoundCycleCompletedEvent {
+	statsMap := make(map[Seat]SeatCycleStats, len(AllSeats))
+	for _, s := range AllSeats {
+		statsMap[s] = t.stats[s]
+	}
+	ev := RoundCycleCompletedEvent{
+		CycleNumber: t.cycleNumber,
+		Elapsed:     t.elapsed,
+		Stats:       statsMap,
+	}
+	t.cycleNumber++
+	t.elapsed = 0
+	t.stats = [5]SeatCycleStats{}
+	return ev
 }
 
 // NewMatchEngine validates rng and opts, returning a MatchEngine in MatchPhaseGathering.
@@ -135,6 +198,7 @@ func (m *MatchEngine) StartMatch(balances map[Seat]int) ([]Event, error) {
 	m.dealerStreak = 0
 	m.balances = initBalances
 	m.hand = hand
+	m.cycle.resetAll()
 
 	events := make([]Event, 0, 1+len(handEvents))
 	events = append(events, MatchStartedEvent{
@@ -147,8 +211,9 @@ func (m *MatchEngine) StartMatch(balances map[Seat]int) ([]Event, error) {
 }
 
 // Apply delegates one player action to the active hand.
-// When a hand settles, balances are updated immediately before WaitReady finishes.
-// When all four seats confirm ActionReady, the match advances dealer/streak/round wind and starts the next hand.
+// When a hand settles, balances and 4-round cycle statistics are updated immediately before WaitReady finishes.
+// When all four seats confirm ActionReady, the match advances dealer/streak/round wind (emitting
+// RoundCycleCompletedEvent before MatchProgressedEvent on North->East wrap) and starts the next hand.
 func (m *MatchEngine) Apply(action PlayerAction, thinkElapsed time.Duration) ([]Event, error) {
 	if m.phase != MatchPhaseInHand || m.hand == nil {
 		return nil, fmt.Errorf("match phase %d: %w", m.phase, ErrInvalidPhase)
@@ -164,6 +229,8 @@ func (m *MatchEngine) Apply(action PlayerAction, thinkElapsed time.Duration) ([]
 		for _, s := range AllSeats {
 			m.balances[s] = m.hand.balancesAfter[s]
 		}
+		reason, score := m.hand.HandResult()
+		m.cycle.recordSettlement(reason, score)
 	}
 
 	if m.hand.Phase() == HandPhaseFinished {
@@ -175,19 +242,26 @@ func (m *MatchEngine) Apply(action PlayerAction, thinkElapsed time.Duration) ([]
 			m.hand.phase = HandPhaseWaitReady
 			return nil, err
 		}
+		m.cycle.addThinkTime(thinkElapsed)
+		completedCycle := m.roundWind == WindNorth && nextWind == WindEast
 		m.roundWind = nextWind
 		m.dealer = nextDealer
 		m.dealerStreak = nextStreak
 		m.hand = nextHand
 
+		if completedCycle {
+			events = append(events, m.cycle.completeCycle())
+		}
 		events = append(events, MatchProgressedEvent{
 			RoundWind:    nextWind,
 			Dealer:       nextDealer,
 			DealerStreak: nextStreak,
 		})
 		events = append(events, nextHandEvents...)
+		return events, nil
 	}
 
+	m.cycle.addThinkTime(thinkElapsed)
 	return events, nil
 }
 
@@ -212,6 +286,7 @@ func (m *MatchEngine) PlayerLeft(leaver Seat) ([]Event, error) {
 	m.dealer = SeatUnknown
 	m.dealerStreak = 0
 	m.hand = nil
+	m.cycle.resetAll()
 
 	events := make([]Event, 0, len(handEvents)+1)
 	events = append(events, handEvents...)
@@ -260,7 +335,7 @@ func (m *MatchEngine) buildAndStartHand(roundWind Wind, dealer Seat, streak int,
 }
 
 func advanceMatchProgress(roundWind Wind, dealer Seat, streak int, reason HandEndReason, score *ScoreResult) (Wind, Seat, int) {
-	if reason == HandEndExhausted {
+	if reason.IsDraw() {
 		return roundWind, dealer, streak + 1
 	}
 	if reason == HandEndWin && score != nil && score.Winner == dealer {

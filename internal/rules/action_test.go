@@ -41,6 +41,23 @@ func TestPlayerAction_Validate(t *testing.T) {
 			},
 		},
 		{
+			name: "valid self declare riichi with discard tile",
+			action: rules.PlayerAction{
+				Seat:        rules.Seat2,
+				Kind:        rules.ActionSelfDeclare,
+				SelfDeclare: rules.SelfDeclareRiichi,
+				Tile:        rules.Suo9,
+			},
+		},
+		{
+			name: "valid self declare nine terminals",
+			action: rules.PlayerAction{
+				Seat:        rules.Seat1,
+				Kind:        rules.ActionSelfDeclare,
+				SelfDeclare: rules.SelfDeclareNineTerminals,
+			},
+		},
+		{
 			name: "valid claim chow with option",
 			action: rules.PlayerAction{
 				Seat:  rules.Seat2,
@@ -83,6 +100,25 @@ func TestPlayerAction_Validate(t *testing.T) {
 				Seat:        rules.Seat1,
 				Kind:        rules.ActionSelfDeclare,
 				SelfDeclare: rules.SelfDeclareConcealedKong,
+			},
+			wantErr: rules.ErrInvalidAction,
+		},
+		{
+			name: "riichi missing discard tile rejected",
+			action: rules.PlayerAction{
+				Seat:        rules.Seat1,
+				Kind:        rules.ActionSelfDeclare,
+				SelfDeclare: rules.SelfDeclareRiichi,
+			},
+			wantErr: rules.ErrInvalidAction,
+		},
+		{
+			name: "riichi flower discard tile rejected",
+			action: rules.PlayerAction{
+				Seat:        rules.Seat1,
+				Kind:        rules.ActionSelfDeclare,
+				SelfDeclare: rules.SelfDeclareRiichi,
+				Tile:        rules.FlowerSpring,
 			},
 			wantErr: rules.ErrInvalidAction,
 		},

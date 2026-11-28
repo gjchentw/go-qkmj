@@ -226,3 +226,119 @@ func TestClaimWindow_PassedWinTracking(t *testing.T) {
 		t.Fatalf("flower pass resolution = %+v, want ClaimPass with empty PassedWinSeats", fres)
 	}
 }
+
+func TestClaimWindow_TripleRonDraw(t *testing.T) {
+	t.Parallel()
+
+	// Seat1 discards; Seat2, Seat3, Seat4 all claim Win -> Triple Ron draw!
+	win := rules.NewClaimWindow(rules.ClaimWindowDiscard, rules.Seat1, rules.Suo5, []rules.SeatClaimOptions{
+		{Seat: rules.Seat2, Options: []rules.ClaimKind{rules.ClaimWin}},
+		{Seat: rules.Seat3, Options: []rules.ClaimKind{rules.ClaimWin}},
+		{Seat: rules.Seat4, Options: []rules.ClaimKind{rules.ClaimWin}},
+	})
+
+	// Even though Seat2 is clockwise first, all 3 can win so early resolution MUST wait for Triple Ron check.
+	if _, res, err := win.Submit(rules.Seat2, rules.ClaimWin, rules.ChowOption{}); err != nil || res != nil {
+		t.Fatalf("Seat2 win with 3 potential winners = (%+v, %v), want pending", res, err)
+	}
+	if _, res, err := win.Submit(rules.Seat3, rules.ClaimWin, rules.ChowOption{}); err != nil || res != nil {
+		t.Fatalf("Seat3 win with 3rd winner undecided = (%+v, %v), want pending", res, err)
+	}
+	_, res, err := win.Submit(rules.Seat4, rules.ClaimWin, rules.ChowOption{})
+	if err != nil {
+		t.Fatalf("Seat4 win err = %v", err)
+	}
+	if res == nil || !res.IsTripleRon || res.Winner != rules.SeatUnknown {
+		t.Fatalf("resolution = %+v, want IsTripleRon=true and Winner=SeatUnknown", res)
+	}
+}
+
+func TestClaimWindow_EarlyResolution095o(t *testing.T) {
+	t.Parallel()
+
+	t.Run("earliest winner resolves immediately when triple ron is impossible", func(t *testing.T) {
+		t.Parallel()
+		win := rules.NewClaimWindow(rules.ClaimWindowDiscard, rules.Seat1, rules.Wan5, []rules.SeatClaimOptions{
+			{Seat: rules.Seat2, Options: []rules.ClaimKind{rules.ClaimWin}},
+			{Seat: rules.Seat3, Options: []rules.ClaimKind{rules.ClaimPong}},
+			{Seat: rules.Seat4, Options: []rules.ClaimKind{rules.ClaimWin}},
+		})
+
+		_, res, err := win.Submit(rules.Seat2, rules.ClaimWin, rules.ChowOption{})
+		if err != nil {
+			t.Fatalf("Seat2 win err = %v", err)
+		}
+		if res == nil || res.Kind != rules.ClaimWin || res.Winner != rules.Seat2 || res.IsTripleRon {
+			t.Fatalf("expected immediate early resolution for Seat2 Win, got %+v", res)
+		}
+		if !win.IsComplete() {
+			t.Fatal("IsComplete() = false after early resolution, want true")
+		}
+	})
+
+	t.Run("three potential winners early resolves once one passes", func(t *testing.T) {
+		t.Parallel()
+		win := rules.NewClaimWindow(rules.ClaimWindowDiscard, rules.Seat1, rules.Wan5, []rules.SeatClaimOptions{
+			{Seat: rules.Seat2, Options: []rules.ClaimKind{rules.ClaimWin}},
+			{Seat: rules.Seat3, Options: []rules.ClaimKind{rules.ClaimWin}},
+			{Seat: rules.Seat4, Options: []rules.ClaimKind{rules.ClaimWin}},
+		})
+
+		if _, res, err := win.Submit(rules.Seat2, rules.ClaimWin, rules.ChowOption{}); err != nil || res != nil {
+			t.Fatalf("Seat2 submit = (%+v, %v), want pending", res, err)
+		}
+		// Seat3 passes -> Triple Ron is now impossible and Seat2 is earliest -> immediate early resolve!
+		_, res, err := win.Submit(rules.Seat3, rules.ClaimPass, rules.ChowOption{})
+		if err != nil {
+			t.Fatalf("Seat3 pass err = %v", err)
+		}
+		if res == nil || res.Kind != rules.ClaimWin || res.Winner != rules.Seat2 || res.IsTripleRon {
+			t.Fatalf("expected early resolution for Seat2 Win once Seat3 passed, got %+v", res)
+		}
+	})
+
+	t.Run("pong early resolves and cancels WaitChowChoice", func(t *testing.T) {
+		t.Parallel()
+		c234 := rules.ChowOption{Tiles: [3]rules.Tile{rules.Wan2, rules.Wan3, rules.Wan4}}
+		c345 := rules.ChowOption{Tiles: [3]rules.Tile{rules.Wan3, rules.Wan4, rules.Wan5}}
+		win := rules.NewClaimWindow(rules.ClaimWindowDiscard, rules.Seat1, rules.Wan4, []rules.SeatClaimOptions{
+			{Seat: rules.Seat2, Options: []rules.ClaimKind{rules.ClaimChow}, ChowOptions: []rules.ChowOption{c234, c345}},
+			{Seat: rules.Seat3, Options: []rules.ClaimKind{rules.ClaimPong}},
+		})
+
+		if _, res, err := win.Submit(rules.Seat2, rules.ClaimChow, rules.ChowOption{}); err != nil || res != nil {
+			t.Fatalf("Seat2 enter WaitChowChoice = (%+v, %v)", res, err)
+		}
+		if win.WaitingChowSeat() != rules.Seat2 {
+			t.Fatalf("WaitingChowSeat() = %v, want Seat2", win.WaitingChowSeat())
+		}
+		// Seat3 submits Pong -> no Win/Kong exists -> immediate early resolve cancelling WaitChowChoice!
+		_, res, err := win.Submit(rules.Seat3, rules.ClaimPong, rules.ChowOption{})
+		if err != nil {
+			t.Fatalf("Seat3 pong err = %v", err)
+		}
+		if res == nil || res.Kind != rules.ClaimPong || res.Winner != rules.Seat3 {
+			t.Fatalf("expected early Pong resolution for Seat3, got %+v", res)
+		}
+		if win.WaitingChowSeat() != rules.SeatUnknown || !win.IsComplete() {
+			t.Fatalf("WaitChowChoice not cleared after early resolution: waiting=%v complete=%v", win.WaitingChowSeat(), win.IsComplete())
+		}
+	})
+
+	t.Run("kong early resolves without waiting for chow", func(t *testing.T) {
+		t.Parallel()
+		c234 := rules.ChowOption{Tiles: [3]rules.Tile{rules.Wan2, rules.Wan3, rules.Wan4}}
+		win := rules.NewClaimWindow(rules.ClaimWindowDiscard, rules.Seat1, rules.Wan4, []rules.SeatClaimOptions{
+			{Seat: rules.Seat2, Options: []rules.ClaimKind{rules.ClaimChow}, ChowOptions: []rules.ChowOption{c234}},
+			{Seat: rules.Seat3, Options: []rules.ClaimKind{rules.ClaimPong, rules.ClaimKong}},
+		})
+
+		_, res, err := win.Submit(rules.Seat3, rules.ClaimKong, rules.ChowOption{})
+		if err != nil {
+			t.Fatalf("Seat3 kong err = %v", err)
+		}
+		if res == nil || res.Kind != rules.ClaimKong || res.Winner != rules.Seat3 {
+			t.Fatalf("expected immediate Kong early resolution for Seat3, got %+v", res)
+		}
+	})
+}

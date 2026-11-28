@@ -943,3 +943,230 @@ func TestHandEngine_Abort_PlayingVsWaitReady(t *testing.T) {
 		}
 	})
 }
+
+func TestHandEngine_SpecialDraws_RevealZeroDeltaAndWaitReady(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nine terminals draw reveals hands with zero delta and requires all 4 ready", func(t *testing.T) {
+		t.Parallel()
+
+		hands, extra := nonWinningHandsNoFlowers()
+		// Seat1 already has 11 distinct terminals/honors in nonWinningHandsNoFlowers():
+		// Wan1, Wan9, Suo1, Suo9, Tong1, Tong9, EastWind -> add 2 more honors so >= 9 distinct types.
+		hands[rules.Seat1][2] = rules.SouthWind
+		hands[rules.Seat1][3] = rules.WestWind
+		hands[rules.Seat1][7] = rules.NorthWind
+		wall := buildDeterministicWall(t, rules.Seat1, hands, extra, nil)
+
+		eng, err := rules.NewHandEngine(
+			rules.HandConfig{
+				RoundWind: rules.WindEast,
+				Dealer:    rules.Seat1,
+				Balances:  defaultBalances(),
+				Base:      rules.DefaultBase,
+				PerFan:    rules.DefaultPerFan,
+			},
+			rules.WithWall(wall),
+			rules.WithDoorSeat(rules.Seat1),
+		)
+		if err != nil {
+			t.Fatalf("NewHandEngine: %v", err)
+		}
+		if _, err := eng.Start(); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+
+		evs, err := eng.Apply(rules.PlayerAction{
+			Seat:        rules.Seat1,
+			Kind:        rules.ActionSelfDeclare,
+			SelfDeclare: rules.SelfDeclareNineTerminals,
+		}, time.Second)
+		if err != nil {
+			t.Fatalf("SelfDeclareNineTerminals: %v", err)
+		}
+		if eng.Phase() != rules.HandPhaseWaitReady || !eng.Settled() {
+			t.Fatalf("Phase=%v Settled=%v, want WaitReady & true", eng.Phase(), eng.Settled())
+		}
+		reason, score := eng.HandResult()
+		if reason != rules.HandEndNineTerminals || score != nil {
+			t.Fatalf("HandResult() = (%v, %+v), want (HandEndNineTerminals, nil)", reason, score)
+		}
+
+		var (
+			foundReveal  bool
+			foundSettled bool
+			foundWait    bool
+		)
+		for _, ev := range evs {
+			switch e := ev.(type) {
+			case rules.HandsRevealedEvent:
+				foundReveal = true
+				for _, s := range rules.AllSeats {
+					if len(e.Seats[s].Concealed) == 0 {
+						t.Errorf("HandsRevealedEvent missing concealed hand for %v", s)
+					}
+				}
+			case rules.HandSettledEvent:
+				foundSettled = true
+				if e.Reason != rules.HandEndNineTerminals || e.Score != nil || e.IncrementPlayedCount {
+					t.Fatalf("unexpected HandSettledEvent: %+v", e)
+				}
+				for _, s := range rules.AllSeats {
+					if e.Balances[s].Delta != 0 || e.Balances[s].After != 40000 {
+						t.Errorf("seat %v balance change = %+v, want delta=0 after=40000", s, e.Balances[s])
+					}
+				}
+			case rules.WaitReadyEvent:
+				foundWait = true
+			}
+		}
+		if !foundReveal || !foundSettled || !foundWait {
+			t.Fatalf("missing lifecycle events: reveal=%v settled=%v wait=%v", foundReveal, foundSettled, foundWait)
+		}
+
+		// First 3 seats ready keeps WaitReady; duplicate ready & gameplay actions rejected.
+		for _, s := range []rules.Seat{rules.Seat1, rules.Seat2, rules.Seat3} {
+			if _, err := eng.Apply(rules.PlayerAction{Seat: s, Kind: rules.ActionReady}, 0); err != nil {
+				t.Fatalf("ActionReady(%v): %v", s, err)
+			}
+		}
+		if eng.Phase() != rules.HandPhaseWaitReady {
+			t.Fatalf("Phase after 3 ready = %v, want HandPhaseWaitReady", eng.Phase())
+		}
+		if _, err := eng.Apply(rules.PlayerAction{Seat: rules.Seat1, Kind: rules.ActionReady}, 0); !errors.Is(err, rules.ErrAlreadyReady) {
+			t.Fatalf("duplicate ready err = %v, want ErrAlreadyReady", err)
+		}
+		if _, err := eng.Apply(rules.PlayerAction{Seat: rules.Seat4, Kind: rules.ActionDraw}, 0); !errors.Is(err, rules.ErrInvalidPhase) {
+			t.Fatalf("draw in WaitReady err = %v, want ErrInvalidPhase", err)
+		}
+		if _, err := eng.Apply(rules.PlayerAction{Seat: rules.Seat4, Kind: rules.ActionReady}, 0); err != nil {
+			t.Fatalf("ActionReady(Seat4): %v", err)
+		}
+		if eng.Phase() != rules.HandPhaseFinished {
+			t.Fatalf("Phase after 4 ready = %v, want HandPhaseFinished", eng.Phase())
+		}
+	})
+
+	t.Run("four kongs draw reveals concealed kong tiles with zero delta", func(t *testing.T) {
+		t.Parallel()
+
+		hands := map[rules.Seat][]rules.Tile{
+			rules.Seat1: {
+				rules.Wan1, rules.Wan1, rules.Wan1, rules.Wan1,
+				rules.Wan5, rules.Wan5, rules.Wan5, rules.Wan5,
+				rules.Wan9, rules.Wan9, rules.Wan9, rules.Wan9,
+				rules.Tong2, rules.Tong5, rules.Tong8, rules.EastWind,
+			},
+			rules.Seat2: {
+				rules.Suo1, rules.Suo1, rules.Suo1, rules.Suo1,
+				rules.Suo3, rules.Suo5, rules.Suo7, rules.Suo9,
+				rules.Tong1, rules.Tong4, rules.Tong7, rules.Tong9,
+				rules.SouthWind, rules.WestWind, rules.NorthWind, rules.RedDragon,
+			},
+			rules.Seat3: {
+				rules.Wan2, rules.Wan4, rules.Wan6, rules.Wan8,
+				rules.Suo2, rules.Suo4, rules.Suo6, rules.Suo8,
+				rules.Tong2, rules.Tong4, rules.Tong6, rules.Tong8,
+				rules.EastWind, rules.SouthWind, rules.WhiteDragon, rules.GreenDragon,
+			},
+			rules.Seat4: {
+				rules.Wan2, rules.Wan4, rules.Wan6, rules.Wan8,
+				rules.Suo2, rules.Suo4, rules.Suo6, rules.Suo8,
+				rules.Tong2, rules.Tong4, rules.Tong6, rules.Tong8,
+				rules.WestWind, rules.NorthWind, rules.RedDragon, rules.WhiteDragon,
+			},
+		}
+		wall := buildDeterministicWall(t, rules.Seat1, hands, rules.GreenDragon, []rules.Tile{
+			rules.Wan3,        // Seat1 kong #1 supplement
+			rules.Wan7,        // Seat1 kong #2 supplement
+			rules.Suo3,        // Seat1 kong #3 supplement
+			rules.Tong3,       // Seat2 turn draw
+			rules.GreenDragon, // Seat2 kong #4 supplement
+		})
+
+		eng, err := rules.NewHandEngine(
+			rules.HandConfig{
+				RoundWind: rules.WindEast,
+				Dealer:    rules.Seat1,
+				Balances:  defaultBalances(),
+				Base:      rules.DefaultBase,
+				PerFan:    rules.DefaultPerFan,
+			},
+			rules.WithWall(wall),
+			rules.WithDoorSeat(rules.Seat1),
+		)
+		if err != nil {
+			t.Fatalf("NewHandEngine: %v", err)
+		}
+		if _, err := eng.Start(); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+
+		// Seat1 declares 3 concealed kongs and discards GreenDragon.
+		for _, kTile := range []rules.Tile{rules.Wan1, rules.Wan5, rules.Wan9} {
+			if _, err := eng.Apply(rules.PlayerAction{
+				Seat:        rules.Seat1,
+				Kind:        rules.ActionSelfDeclare,
+				SelfDeclare: rules.SelfDeclareConcealedKong,
+				Tile:        kTile,
+			}, 0); err != nil {
+				t.Fatalf("Seat1 concealed kong %v: %v", kTile, err)
+			}
+			if _, err := eng.Apply(rules.PlayerAction{Seat: rules.Seat1, Kind: rules.ActionDraw}, 0); err != nil {
+				t.Fatalf("Seat1 supplement draw: %v", err)
+			}
+		}
+		if _, err := eng.Apply(rules.PlayerAction{Seat: rules.Seat1, Kind: rules.ActionDiscard, Tile: rules.GreenDragon}, 0); err != nil {
+			t.Fatalf("Seat1 discard: %v", err)
+		}
+
+		// Seat2 draws, declares 4th concealed kong (Suo1), supplements, and discards safe GreenDragon -> HandEndFourKongs!
+		if _, err := eng.Apply(rules.PlayerAction{Seat: rules.Seat2, Kind: rules.ActionDraw}, 0); err != nil {
+			t.Fatalf("Seat2 draw: %v", err)
+		}
+		if _, err := eng.Apply(rules.PlayerAction{
+			Seat:        rules.Seat2,
+			Kind:        rules.ActionSelfDeclare,
+			SelfDeclare: rules.SelfDeclareConcealedKong,
+			Tile:        rules.Suo1,
+		}, 0); err != nil {
+			t.Fatalf("Seat2 concealed kong Suo1: %v", err)
+		}
+		if _, err := eng.Apply(rules.PlayerAction{Seat: rules.Seat2, Kind: rules.ActionDraw}, 0); err != nil {
+			t.Fatalf("Seat2 supplement draw: %v", err)
+		}
+		evs, err := eng.Apply(rules.PlayerAction{Seat: rules.Seat2, Kind: rules.ActionDiscard, Tile: rules.GreenDragon}, 0)
+		if err != nil {
+			t.Fatalf("Seat2 safe discard: %v", err)
+		}
+
+		if eng.Phase() != rules.HandPhaseWaitReady {
+			t.Fatalf("Phase = %v, want HandPhaseWaitReady", eng.Phase())
+		}
+		var revealEv *rules.HandsRevealedEvent
+		var settledEv *rules.HandSettledEvent
+		for _, ev := range evs {
+			switch e := ev.(type) {
+			case rules.HandsRevealedEvent:
+				cp := e
+				revealEv = &cp
+			case rules.HandSettledEvent:
+				cp := e
+				settledEv = &cp
+			}
+		}
+		if revealEv == nil || settledEv == nil {
+			t.Fatalf("expected HandsRevealedEvent & HandSettledEvent, got %+v", evs)
+		}
+		if settledEv.Reason != rules.HandEndFourKongs || settledEv.IncrementPlayedCount || settledEv.Score != nil {
+			t.Fatalf("unexpected HandSettledEvent: %+v", settledEv)
+		}
+		if len(revealEv.Seats[rules.Seat1].Melds) != 3 || len(revealEv.Seats[rules.Seat2].Melds) != 1 {
+			t.Fatalf("revealed concealed kongs mismatch: seat1=%+v seat2=%+v", revealEv.Seats[rules.Seat1].Melds, revealEv.Seats[rules.Seat2].Melds)
+		}
+		m2 := revealEv.Seats[rules.Seat2].Melds[0]
+		if m2.Kind != rules.MeldConcealedKong || len(m2.Tiles) != 4 || m2.Tiles[0] != rules.Suo1 {
+			t.Fatalf("expected Seat2 concealed kong Suo1 revealed with 4 tiles, got %+v", m2)
+		}
+	})
+}

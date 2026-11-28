@@ -590,3 +590,256 @@ func TestMatchEngine_Apply_AtomicRollbackOnNextHandFactoryError(t *testing.T) {
 		t.Fatalf("PlayerLeft after failed next-hand start: %v", err)
 	}
 }
+
+func buildFourWindsDrawWall(t *testing.T, dealer rules.Seat) *rules.Wall {
+	t.Helper()
+	full := nonTenpaiTurnHands()
+	hands := map[rules.Seat][]rules.Tile{
+		rules.Seat1: full[rules.Seat1][:rules.WaitingHandSize],
+		rules.Seat2: full[rules.Seat2],
+		rules.Seat3: full[rules.Seat3],
+		rules.Seat4: full[rules.Seat4],
+	}
+	return buildDeterministicWall(t, dealer, hands, full[rules.Seat1][rules.WaitingHandSize], []rules.Tile{
+		rules.Wan1, rules.Suo1, rules.Tong1,
+	})
+}
+
+func buildNineTerminalsDrawWall(t *testing.T, dealer rules.Seat) *rules.Wall {
+	t.Helper()
+	hands, extra := nonWinningHandsNoFlowers()
+	hands[dealer][2] = rules.SouthWind
+	hands[dealer][3] = rules.WestWind
+	hands[dealer][7] = rules.NorthWind
+	return buildDeterministicWall(t, dealer, hands, extra, nil)
+}
+
+func buildDiscardWinWall(t *testing.T, dealer, winner rules.Seat) *rules.Wall {
+	t.Helper()
+	hands, _ := nonWinningHandsNoFlowers()
+	// Winner waits on RedDragon (single wait on pair); dealer draws extra RedDragon and discards it.
+	hands[winner] = []rules.Tile{
+		rules.Wan1, rules.Wan2, rules.Wan3,
+		rules.Wan4, rules.Wan5, rules.Wan6,
+		rules.Suo1, rules.Suo2, rules.Suo3,
+		rules.Tong1, rules.Tong2, rules.Tong3,
+		rules.Tong7, rules.Tong8, rules.Tong9,
+		rules.RedDragon,
+	}
+	return buildDeterministicWall(t, dealer, hands, rules.RedDragon, nil)
+}
+
+func TestMatchEngine_SpecialDraw_DealerStreakAndRoundCycleStats(t *testing.T) {
+	t.Parallel()
+
+	// Cycle 1 plan:
+	//  Hand 0 (East, Seat1, streak 0): Dealer Seat1 wins TianHu (2s) -> streak 1
+	//  Hand 1 (East, Seat1, streak 1): Four Winds draw (4 × 1s = 4s) -> streak 2
+	//  Hand 2 (East, Seat1, streak 2): Nine Terminals draw (1s) -> streak 3
+	//  Hand 3 (East, Seat1, streak 3): Seat1 discards RedDragon, Seat2 wins (3s) -> East Seat2 streak 0
+	//  Hands 4..18 (15 rotations via non-dealer Eight Immortals, 1s each) -> wraps North Seat4 -> East Seat1 (Cycle 1 ends!)
+	// Cycle 2 plan:
+	//  Hands 19..34 (16 rotations via non-dealer Eight Immortals, 2s each) -> wraps North Seat4 -> East Seat1 (Cycle 2 ends!)
+	// Reset after PlayerLeft + StartMatch:
+	//  Hands 35..50 (16 rotations via non-dealer Eight Immortals, 1s each) -> CycleNumber resets to 1!
+	handIdx := 0
+	currentDealer := rules.Seat1
+	wallFactory := func(_ rand.Source) (*rules.Wall, error) {
+		idx := handIdx
+		handIdx++
+		switch idx {
+		case 0:
+			return buildDealerTianHuWall(t, rules.Seat1), nil
+		case 1:
+			return buildFourWindsDrawWall(t, rules.Seat1), nil
+		case 2:
+			return buildNineTerminalsDrawWall(t, rules.Seat1), nil
+		case 3:
+			currentDealer = rules.Seat2
+			return buildDiscardWinWall(t, rules.Seat1, rules.Seat2), nil
+		default:
+			winner := currentDealer.Next()
+			w := buildOpeningEightFlowersWall(t, currentDealer, winner)
+			currentDealer = winner
+			return w, nil
+		}
+	}
+
+	m, err := rules.NewMatchEngine(
+		nil,
+		rules.WithStakes(rules.DefaultBase, rules.DefaultPerFan),
+		rules.WithWallFactory(wallFactory),
+		rules.WithDoorSeatPicker(func(_ rand.Source) rules.Seat { return rules.Seat1 }),
+	)
+	if err != nil {
+		t.Fatalf("NewMatchEngine: %v", err)
+	}
+	if _, err := m.StartMatch(defaultBalances()); err != nil {
+		t.Fatalf("StartMatch: %v", err)
+	}
+
+	// Hand 0: Dealer Seat1 TianHu (2s).
+	if _, err := m.Apply(rules.PlayerAction{
+		Seat:        rules.Seat1,
+		Kind:        rules.ActionSelfDeclare,
+		SelfDeclare: rules.SelfDeclareSelfWin,
+	}, 2*time.Second); err != nil {
+		t.Fatalf("Hand 0 TianHu: %v", err)
+	}
+	readyAllSeats(t, m)
+
+	// Hand 1: Four Winds draw -> dealer MUST remain Seat1 with streak 2!
+	if _, err := m.Apply(rules.PlayerAction{Seat: rules.Seat1, Kind: rules.ActionDiscard, Tile: rules.EastWind}, time.Second); err != nil {
+		t.Fatalf("Hand 1 Seat1 discard EastWind: %v", err)
+	}
+	for _, s := range []rules.Seat{rules.Seat2, rules.Seat3, rules.Seat4} {
+		if _, err := m.Apply(rules.PlayerAction{Seat: s, Kind: rules.ActionDraw}, 0); err != nil {
+			t.Fatalf("Hand 1 %v draw: %v", s, err)
+		}
+		if _, err := m.Apply(rules.PlayerAction{Seat: s, Kind: rules.ActionDiscard, Tile: rules.EastWind}, time.Second); err != nil {
+			t.Fatalf("Hand 1 %v discard EastWind: %v", s, err)
+		}
+	}
+	readyAllSeats(t, m)
+	if m.RoundWind() != rules.WindEast || m.Dealer() != rules.Seat1 || m.DealerStreak() != 2 {
+		t.Fatalf("after Four Winds draw: got (%v, %v, streak=%d), want (East, Seat1, streak=2)", m.RoundWind(), m.Dealer(), m.DealerStreak())
+	}
+
+	// Hand 2: Nine Terminals draw -> dealer MUST remain Seat1 with streak 3!
+	if _, err := m.Apply(rules.PlayerAction{
+		Seat:        rules.Seat1,
+		Kind:        rules.ActionSelfDeclare,
+		SelfDeclare: rules.SelfDeclareNineTerminals,
+	}, time.Second); err != nil {
+		t.Fatalf("Hand 2 Nine Terminals: %v", err)
+	}
+	readyAllSeats(t, m)
+	if m.RoundWind() != rules.WindEast || m.Dealer() != rules.Seat1 || m.DealerStreak() != 3 {
+		t.Fatalf("after Nine Terminals draw: got (%v, %v, streak=%d), want (East, Seat1, streak=3)", m.RoundWind(), m.Dealer(), m.DealerStreak())
+	}
+
+	// Hand 3: Seat1 discards RedDragon (3s), Seat2 wins -> rotates to East Seat2 streak 0.
+	if _, err := m.Apply(rules.PlayerAction{Seat: rules.Seat1, Kind: rules.ActionDiscard, Tile: rules.RedDragon}, 3*time.Second); err != nil {
+		t.Fatalf("Hand 3 Seat1 discard RedDragon: %v", err)
+	}
+	if _, err := m.Apply(rules.PlayerAction{Seat: rules.Seat2, Kind: rules.ActionClaim, Claim: rules.ClaimWin}, 0); err != nil {
+		t.Fatalf("Hand 3 Seat2 claim win: %v", err)
+	}
+	readyAllSeats(t, m)
+	if m.RoundWind() != rules.WindEast || m.Dealer() != rules.Seat2 || m.DealerStreak() != 0 {
+		t.Fatalf("after Hand 3 discard win: got (%v, %v, streak=%d), want (East, Seat2, streak=0)", m.RoundWind(), m.Dealer(), m.DealerStreak())
+	}
+
+	// Complete remaining 15 rotations of Cycle 1 (1s each).
+	var cycle1WrapEvs []rules.Event
+	for i := range 15 {
+		winner := m.Dealer().Next()
+		if _, err := m.Apply(rules.PlayerAction{Seat: winner, Kind: rules.ActionClaim, Claim: rules.ClaimWin}, time.Second); err != nil {
+			t.Fatalf("Cycle 1 rotation %d (%v): %v", i, winner, err)
+		}
+		evs := readyAllSeats(t, m)
+		if i < 14 {
+			for _, ev := range evs {
+				if _, ok := ev.(rules.RoundCycleCompletedEvent); ok {
+					t.Fatalf("unexpected early RoundCycleCompletedEvent at rotation %d", i)
+				}
+			}
+		} else {
+			cycle1WrapEvs = evs
+		}
+	}
+
+	// Verify RoundCycleCompletedEvent appears immediately before MatchProgressedEvent.
+	c1, cycleIdx := findRoundCycleCompleted(t, cycle1WrapEvs)
+	progIdx := slices.IndexFunc(cycle1WrapEvs, func(ev rules.Event) bool {
+		_, ok := ev.(rules.MatchProgressedEvent)
+		return ok
+	})
+	if progIdx < 0 || cycleIdx >= progIdx {
+		t.Fatalf("expected RoundCycleCompletedEvent before MatchProgressedEvent, got cycleIdx=%d progIdx=%d evs=%+v", cycleIdx, progIdx, cycle1WrapEvs)
+	}
+	// Elapsed = 2s + 4s + 1s + 3s + 15*1s = 25s
+	if c1.CycleNumber != 1 || c1.Elapsed != 25*time.Second {
+		t.Fatalf("Cycle 1 header = (num=%d, elapsed=%v), want (1, 25s)", c1.CycleNumber, c1.Elapsed)
+	}
+	balAfterC1 := m.Balances()
+	deltaSum := 0
+	for _, s := range rules.AllSeats {
+		st := c1.Stats[s]
+		deltaSum += st.NetDelta
+		if st.NetDelta != balAfterC1[s]-40000 {
+			t.Errorf("Cycle 1 %v NetDelta = %d, want %d", s, st.NetDelta, balAfterC1[s]-40000)
+		}
+		if st.Draws != 2 || st.HandsPlayed != 17 {
+			t.Errorf("Cycle 1 %v Draws=%d HandsPlayed=%d, want (2, 17)", s, st.Draws, st.HandsPlayed)
+		}
+	}
+	if deltaSum != 0 {
+		t.Errorf("Cycle 1 NetDelta sum = %d, want 0", deltaSum)
+	}
+	// Seat1: 1 deal-in (Hand 3), 0 discard wins, 5 self-draw wins (Hand 0 TianHu + 4 Eight Immortals on Seat4's deals)
+	// Seat2: 0 deal-ins, 1 discard win (Hand 3), 3 self-draw wins (Eight Immortals on Seat1's deals in S/W/N)
+	// Seat3: 0 deal-ins, 0 discard wins, 4 self-draw wins
+	// Seat4: 0 deal-ins, 0 discard wins, 4 self-draw wins
+	if c1.Stats[rules.Seat1].DealIns != 1 || c1.Stats[rules.Seat1].DiscardWins != 0 || c1.Stats[rules.Seat1].SelfDrawWins != 5 {
+		t.Errorf("Cycle 1 Seat1 stats = %+v, want DealIns=1 DiscardWins=0 SelfDrawWins=5", c1.Stats[rules.Seat1])
+	}
+	if c1.Stats[rules.Seat2].DealIns != 0 || c1.Stats[rules.Seat2].DiscardWins != 1 || c1.Stats[rules.Seat2].SelfDrawWins != 3 {
+		t.Errorf("Cycle 1 Seat2 stats = %+v, want DealIns=0 DiscardWins=1 SelfDrawWins=3", c1.Stats[rules.Seat2])
+	}
+	if c1.Stats[rules.Seat3].SelfDrawWins != 4 || c1.Stats[rules.Seat4].SelfDrawWins != 4 {
+		t.Errorf("Cycle 1 Seat3/Seat4 SelfDrawWins = (%d, %d), want (4, 4)", c1.Stats[rules.Seat3].SelfDrawWins, c1.Stats[rules.Seat4].SelfDrawWins)
+	}
+
+	// Cycle 2: 16 rotations (2s each) -> stats reset and CycleNumber == 2.
+	var cycle2WrapEvs []rules.Event
+	for i := range 16 {
+		winner := m.Dealer().Next()
+		if _, err := m.Apply(rules.PlayerAction{Seat: winner, Kind: rules.ActionClaim, Claim: rules.ClaimWin}, 2*time.Second); err != nil {
+			t.Fatalf("Cycle 2 rotation %d: %v", i, err)
+		}
+		cycle2WrapEvs = readyAllSeats(t, m)
+	}
+	c2, _ := findRoundCycleCompleted(t, cycle2WrapEvs)
+	if c2.CycleNumber != 2 || c2.Elapsed != 32*time.Second {
+		t.Fatalf("Cycle 2 header = (num=%d, elapsed=%v), want (2, 32s)", c2.CycleNumber, c2.Elapsed)
+	}
+	for _, s := range rules.AllSeats {
+		st := c2.Stats[s]
+		if st.Draws != 0 || st.HandsPlayed != 16 || st.DealIns != 0 || st.DiscardWins != 0 || st.SelfDrawWins != 4 {
+			t.Errorf("Cycle 2 %v stats = %+v, want Draws=0 HandsPlayed=16 DealIns=0 DiscardWins=0 SelfDrawWins=4", s, st)
+		}
+	}
+
+	// PlayerLeft + fresh StartMatch resets CycleNumber back to 1.
+	if _, err := m.PlayerLeft(rules.Seat3); err != nil {
+		t.Fatalf("PlayerLeft: %v", err)
+	}
+	currentDealer = rules.Seat1
+	if _, err := m.StartMatch(defaultBalances()); err != nil {
+		t.Fatalf("restart StartMatch: %v", err)
+	}
+	var restartedWrapEvs []rules.Event
+	for i := range 16 {
+		winner := m.Dealer().Next()
+		if _, err := m.Apply(rules.PlayerAction{Seat: winner, Kind: rules.ActionClaim, Claim: rules.ClaimWin}, time.Second); err != nil {
+			t.Fatalf("restarted rotation %d: %v", i, err)
+		}
+		restartedWrapEvs = readyAllSeats(t, m)
+	}
+	rc, _ := findRoundCycleCompleted(t, restartedWrapEvs)
+	if rc.CycleNumber != 1 || rc.Elapsed != 16*time.Second {
+		t.Fatalf("restarted cycle = (num=%d, elapsed=%v), want (1, 16s)", rc.CycleNumber, rc.Elapsed)
+	}
+}
+
+func findRoundCycleCompleted(t *testing.T, evs []rules.Event) (ev rules.RoundCycleCompletedEvent, idx int) {
+	t.Helper()
+	for i, item := range evs {
+		if rc, ok := item.(rules.RoundCycleCompletedEvent); ok {
+			return rc, i
+		}
+	}
+	t.Fatalf("missing RoundCycleCompletedEvent in %+v", evs)
+	return rules.RoundCycleCompletedEvent{}, -1
+}

@@ -29,6 +29,12 @@ func TestEvents_AudienceAndTargetSeat(t *testing.T) {
 		{name: "PlayerReadyEvent", ev: rules.PlayerReadyEvent{Seat: rules.Seat2}},
 		{name: "MatchProgressedEvent", ev: rules.MatchProgressedEvent{RoundWind: rules.WindSouth, Dealer: rules.Seat1, DealerStreak: 0}},
 		{name: "MatchAbortedEvent", ev: rules.MatchAbortedEvent{Leaver: rules.Seat4, HandAborted: true}},
+		{name: "RiichiDeclaredEvent", ev: rules.RiichiDeclaredEvent{Seat: rules.Seat2, IsTianTing: true}},
+		{name: "RoundCycleCompletedEvent", ev: rules.RoundCycleCompletedEvent{
+			CycleNumber: 1,
+			Elapsed:     10 * time.Minute,
+			Stats:       map[rules.Seat]rules.SeatCycleStats{rules.Seat1: {NetDelta: 1500, SelfDrawWins: 1}},
+		}},
 	}
 
 	for _, tt := range publicEvents {
@@ -51,7 +57,13 @@ func TestEvents_AudienceAndTargetSeat(t *testing.T) {
 	}{
 		{name: "DrawPromptEvent", ev: rules.DrawPromptEvent{Seat: rules.Seat1}, wantSeat: rules.Seat1},
 		{name: "TileDrawnEvent", ev: rules.TileDrawnEvent{Seat: rules.Seat2, Tile: rules.Tong7}, wantSeat: rules.Seat2},
-		{name: "SelfDeclarePromptEvent", ev: rules.SelfDeclarePromptEvent{Seat: rules.Seat3, CanSelfWin: true}, wantSeat: rules.Seat3},
+		{name: "SelfDeclarePromptEvent", ev: rules.SelfDeclarePromptEvent{
+			Seat:               rules.Seat3,
+			CanSelfWin:         true,
+			CanNineTerminals:   true,
+			CanRiichi:          true,
+			RiichiDiscardTiles: []rules.Tile{rules.Wan1},
+		}, wantSeat: rules.Seat3},
 		{name: "ClaimPromptEvent", ev: rules.ClaimPromptEvent{Seat: rules.Seat4, WindowKind: rules.ClaimWindowDiscard, Options: []rules.ClaimKind{rules.ClaimPong}}, wantSeat: rules.Seat4},
 		{name: "ChowChoicePromptEvent", ev: rules.ChowChoicePromptEvent{Seat: rules.Seat2}, wantSeat: rules.Seat2},
 		{name: "PassedWinChangedEvent", ev: rules.PassedWinChangedEvent{Seat: rules.Seat3, Passed: true}, wantSeat: rules.Seat3},
@@ -67,6 +79,33 @@ func TestEvents_AudienceAndTargetSeat(t *testing.T) {
 			}
 			if got := tt.ev.TargetSeat(); got != tt.wantSeat {
 				t.Errorf("TargetSeat() = %v, want %v", got, tt.wantSeat)
+			}
+		})
+	}
+}
+
+func TestHandEndReason_IsDraw(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		reason rules.HandEndReason
+		want   bool
+	}{
+		{name: "unknown", reason: rules.HandEndUnknown, want: false},
+		{name: "win", reason: rules.HandEndWin, want: false},
+		{name: "aborted", reason: rules.HandEndAborted, want: false},
+		{name: "exhausted", reason: rules.HandEndExhausted, want: true},
+		{name: "four_winds", reason: rules.HandEndFourWinds, want: true},
+		{name: "four_kongs", reason: rules.HandEndFourKongs, want: true},
+		{name: "triple_ron", reason: rules.HandEndTripleRon, want: true},
+		{name: "nine_terminals", reason: rules.HandEndNineTerminals, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.reason.IsDraw(); got != tt.want {
+				t.Errorf("HandEndReason(%d).IsDraw() = %v, want %v", tt.reason, got, tt.want)
 			}
 		})
 	}

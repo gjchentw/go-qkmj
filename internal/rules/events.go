@@ -32,7 +32,23 @@ const (
 	HandEndWin
 	HandEndExhausted
 	HandEndAborted
+	HandEndFourWinds
+	HandEndFourKongs
+	HandEndTripleRon
+	HandEndNineTerminals
 )
+
+// IsDraw reports whether r is one of the five non-win, non-abort draw outcomes.
+func (r HandEndReason) IsDraw() bool {
+	switch r {
+	case HandEndExhausted, HandEndFourWinds, HandEndFourKongs, HandEndTripleRon, HandEndNineTerminals:
+		return true
+	case HandEndUnknown, HandEndWin, HandEndAborted:
+		return false
+	default:
+		return false
+	}
+}
 
 // Event is a sealed strongly-typed output emitted by pure rules state transitions.
 // Downstream table actors route events using Audience() and TargetSeat() without leaking hidden data.
@@ -116,6 +132,9 @@ type SelfDeclarePromptEvent struct {
 	CanSelfWin         bool
 	ConcealedKongTiles []Tile
 	AddedKongTiles     []Tile
+	CanNineTerminals   bool
+	CanRiichi          bool
+	RiichiDiscardTiles []Tile
 }
 
 // Audience returns AudiencePrivate.
@@ -383,3 +402,41 @@ func (MatchAbortedEvent) Audience() EventAudience { return AudiencePublic }
 // TargetSeat returns SeatUnknown for public events.
 func (MatchAbortedEvent) TargetSeat() Seat { return SeatUnknown }
 func (MatchAbortedEvent) rulesEvent()      {}
+
+// RiichiDeclaredEvent publicly announces that a seat declared Riichi (or TianTing on the unbroken first round).
+// It never exposes any concealed hands.
+type RiichiDeclaredEvent struct {
+	Seat       Seat
+	IsTianTing bool
+}
+
+// Audience returns AudiencePublic.
+func (RiichiDeclaredEvent) Audience() EventAudience { return AudiencePublic }
+
+// TargetSeat returns SeatUnknown for public events.
+func (RiichiDeclaredEvent) TargetSeat() Seat { return SeatUnknown }
+func (RiichiDeclaredEvent) rulesEvent()      {}
+
+// SeatCycleStats aggregates one seat's statistics over a completed 4-round cycle (East through North).
+type SeatCycleStats struct {
+	NetDelta     int
+	DealIns      int
+	DiscardWins  int
+	SelfDrawWins int
+	HandsPlayed  int
+	Draws        int
+}
+
+// RoundCycleCompletedEvent publicly emits per-seat statistics when a 4-round cycle wraps from North back to East.
+type RoundCycleCompletedEvent struct {
+	CycleNumber int
+	Elapsed     time.Duration
+	Stats       map[Seat]SeatCycleStats
+}
+
+// Audience returns AudiencePublic.
+func (RoundCycleCompletedEvent) Audience() EventAudience { return AudiencePublic }
+
+// TargetSeat returns SeatUnknown for public events.
+func (RoundCycleCompletedEvent) TargetSeat() Seat { return SeatUnknown }
+func (RoundCycleCompletedEvent) rulesEvent()      {}

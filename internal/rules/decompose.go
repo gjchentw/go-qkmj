@@ -86,18 +86,98 @@ func CanWin(concealed []Tile, melds []Meld, winTile Tile) bool {
 	if !ok {
 		return false
 	}
-	needGroups := 5 - len(melds)
+	return canWinCounts(&counts, 5-len(melds))
+}
+
+func canWinCounts(counts *[NonFlowerMax + 1]int, needGroups int) bool {
 	for pair := Wan1; pair <= NonFlowerMax; pair++ {
 		if counts[pair] < 2 {
 			continue
 		}
 		counts[pair] -= 2
-		if canPartitionGroups(&counts, needGroups) {
+		if canPartitionGroups(counts, needGroups) {
+			counts[pair] += 2
 			return true
 		}
 		counts[pair] += 2
 	}
 	return false
+}
+
+// FindRiichiDiscardTiles returns the sorted, deduplicated non-flower tiles in concealed whose
+// discard leaves a concealed (門清) tenpai hand waiting on at least one valid tile.
+// Any exposed meld (BreaksConcealed() == true) immediately disqualifies Riichi and returns nil.
+func FindRiichiDiscardTiles(concealed []Tile, melds []Meld) []Tile {
+	if len(melds) > 5 || len(concealed)+len(melds)*MeldEquivalentSize != DrawnHandSize {
+		return nil
+	}
+	var counts, total [NonFlowerMax + 1]int
+	for _, m := range melds {
+		if m.Kind.BreaksConcealed() || m.Validate() != nil {
+			return nil
+		}
+		for _, t := range m.Tiles {
+			total[t]++
+			if total[t] > 4 {
+				return nil
+			}
+		}
+	}
+	for _, t := range concealed {
+		if !t.Valid() || t.IsFlower() {
+			return nil
+		}
+		counts[t]++
+		total[t]++
+		if total[t] > 4 {
+			return nil
+		}
+	}
+
+	needGroups := 5 - len(melds)
+	var out []Tile
+	for discard := Wan1; discard <= NonFlowerMax; discard++ {
+		if counts[discard] == 0 {
+			continue
+		}
+		counts[discard]--
+		total[discard]--
+		if hasAnyWinningTile(&counts, &total, needGroups) {
+			out = append(out, discard)
+		}
+		counts[discard]++
+		total[discard]++
+	}
+	return out
+}
+
+func hasAnyWinningTile(counts, total *[NonFlowerMax + 1]int, needGroups int) bool {
+	for wait := Wan1; wait <= NonFlowerMax; wait++ {
+		if total[wait] >= 4 {
+			continue
+		}
+		counts[wait]++
+		win := canWinCounts(counts, needGroups)
+		counts[wait]--
+		if win {
+			return true
+		}
+	}
+	return false
+}
+
+// CountDistinctTerminalOrHonor counts how many distinct terminal (1/9) or honor (wind/dragon)
+// tile types appear in concealed, used for Nine Terminals (九么九和) eligibility.
+func CountDistinctTerminalOrHonor(concealed []Tile) int {
+	var seen [NonFlowerMax + 1]bool
+	distinct := 0
+	for _, t := range concealed {
+		if t.Valid() && !t.IsFlower() && t.IsTerminalOrHonor() && !seen[t] {
+			seen[t] = true
+			distinct++
+		}
+	}
+	return distinct
 }
 
 // Decompose enumerates all distinct canonical 5-group + 1-pair decompositions

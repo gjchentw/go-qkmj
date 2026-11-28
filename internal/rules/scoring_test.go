@@ -297,3 +297,67 @@ func assertHasFan(t *testing.T, res rules.ScoreResult, id rules.FanID, wantPoint
 	}
 	t.Errorf("missing expected fan %v (%d pts) in %+v", id, wantPoints, res.Fans)
 }
+
+func TestScore_RiichiAndTianTing(t *testing.T) {
+	t.Parallel()
+
+	baseHand := []rules.Tile{
+		rules.Wan1, rules.Wan2, rules.Wan3,
+		rules.Wan4, rules.Wan5, rules.Wan6,
+		rules.Suo2, rules.Suo3, rules.Suo4,
+		rules.Tong5, rules.Tong6, rules.Tong7,
+		rules.Tong8, rules.Tong9,
+		rules.EastWind, rules.EastWind,
+	}
+
+	t.Run("mid-hand concealed riichi scores 1 fan", func(t *testing.T) {
+		t.Parallel()
+		res, err := rules.Score(rules.ScoreContext{
+			Concealed: baseHand,
+			WinTile:   rules.Tong7,
+			WinKind:   rules.WinDiscard,
+			Winner:    rules.Seat2,
+			Payer:     rules.Seat3,
+			Dealer:    rules.Seat1,
+			RoundWind: rules.WindSouth,
+			SeatWind:  rules.WindWest,
+			IsRiichi:  true,
+		})
+		if err != nil {
+			t.Fatalf("Score: %v", err)
+		}
+		assertHasFan(t, res, rules.FanRiichi, 1)
+		assertHasFan(t, res, rules.FanConcealed, 1)
+		if res.TotalFan != 2 {
+			t.Errorf("TotalFan = %d, want 2 (%+v)", res.TotalFan, res.Fans)
+		}
+	})
+
+	t.Run("first-round tian ting scores 8 fan and replaces riichi", func(t *testing.T) {
+		t.Parallel()
+		res, err := rules.Score(rules.ScoreContext{
+			Concealed:  baseHand,
+			WinTile:    rules.Tong7,
+			WinKind:    rules.WinSelfDraw,
+			Winner:     rules.Seat2,
+			Dealer:     rules.Seat1,
+			RoundWind:  rules.WindSouth,
+			SeatWind:   rules.WindWest,
+			IsRiichi:   true,
+			IsTianTing: true,
+		})
+		if err != nil {
+			t.Fatalf("Score: %v", err)
+		}
+		assertHasFan(t, res, rules.FanTianTing, 8)
+		assertHasFan(t, res, rules.FanConcealedSelfDraw, 3)
+		for _, f := range res.Fans {
+			if f.ID == rules.FanRiichi {
+				t.Fatalf("FanRiichi must be replaced by FanTianTing, got %+v", res.Fans)
+			}
+		}
+		if res.TotalFan != 11 {
+			t.Errorf("TotalFan = %d, want 11 (TianTing 8 + ConcealedSelfDraw 3), got %+v", res.TotalFan, res.Fans)
+		}
+	})
+}

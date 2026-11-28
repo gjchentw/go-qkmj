@@ -56,11 +56,13 @@ const (
 	FanConcealedSelfDraw
 
 	// Situational fans
+	FanRiichi
 	FanKongFlowerWin
 	FanLastTileSelfDraw
 	FanLastTileDiscard
 	FanRobKong
 	FanAllClaimed
+	FanTianTing
 	FanHeavenlyWin
 	FanEarthlyWin
 	FanHumanWin
@@ -141,6 +143,8 @@ type ScoreContext struct {
 	IsAfterSupplement    bool
 	IsLastDrawable       bool
 	IsFirstRoundUnbroken bool
+	IsRiichi             bool
+	IsTianTing           bool
 	Base                 int
 	PerFan               int
 }
@@ -407,7 +411,7 @@ func evaluateDecomposition(ctx ScoreContext, d Decomposition) []Fan {
 	f := analyzeHand(ctx, d)
 	fans := make([]Fan, 0, 8)
 	fans = appendBasicFans(fans, ctx, f)
-	fans = appendSituationalFans(fans, ctx)
+	fans = appendSituationalFans(fans, ctx, f)
 	fans = appendWindFans(fans, ctx, d, f)
 	fans = appendDragonAndHonorFans(fans, d, f)
 	fans = appendFlowerFans(fans, ctx)
@@ -431,8 +435,16 @@ func appendBasicFans(fans []Fan, ctx ScoreContext, f handFeatures) []Fan {
 	return fans
 }
 
-func appendSituationalFans(fans []Fan, ctx ScoreContext) []Fan {
+func appendSituationalFans(fans []Fan, ctx ScoreContext, f handFeatures) []Fan {
 	isSelfDraw := ctx.WinKind == WinSelfDraw
+	if f.isConcealed {
+		switch {
+		case ctx.IsTianTing:
+			fans = append(fans, Fan{ID: FanTianTing, Name: "天聽", Points: 8})
+		case ctx.IsRiichi:
+			fans = append(fans, Fan{ID: FanRiichi, Name: "立直", Points: 1})
+		}
+	}
 	if isSelfDraw && ctx.IsAfterSupplement {
 		fans = append(fans, Fan{ID: FanKongFlowerWin, Name: "杠上開花", Points: 1})
 	}
@@ -654,7 +666,11 @@ func appendTripletAndKongFans(fans []Fan, f handFeatures) []Fan {
 	}
 
 	if hasThreeSuitedTriplets(f) {
-		fans = append(fans, Fan{ID: FanThreeSuitedTriplets, Name: "三色同刻", Points: 2})
+		pts := 1
+		if f.isConcealed {
+			pts = 2
+		}
+		fans = append(fans, Fan{ID: FanThreeSuitedTriplets, Name: "三色同刻", Points: pts})
 	}
 	return fans
 }

@@ -14,6 +14,7 @@ var (
 	ErrNotYourTurn       = errors.New("action seat is not the active seat")
 	ErrTileNotInHand     = errors.New("tile not found in concealed hand")
 	ErrInvalidThinkTime  = errors.New("thinking time must be non-negative")
+	ErrRiichiLocked      = errors.New("riichi hand can only discard the newly drawn tile")
 )
 
 // TurnPhase identifies the current waiting or terminal phase of a single hand's turn cycle.
@@ -68,20 +69,25 @@ type TurnEngine struct {
 	base         int
 	perFan       int
 
-	phase             TurnPhase
-	currentTurn       Seat
-	concealed         [5][]Tile
-	melds             [5][]Meld
-	flowers           [5][]Tile
-	discards          []DiscardRecord
-	thinkingTime      [5]time.Duration
-	passedWin         [5]bool
-	hasDiscarded      [5]bool
-	anyMeldDeclared   bool
-	pendingSupplement bool
-	afterSupplement   bool
-	lastDrawnTile     Tile
-	pendingAddedKong  Tile
+	phase                TurnPhase
+	currentTurn          Seat
+	concealed            [5][]Tile
+	melds                [5][]Meld
+	flowers              [5][]Tile
+	discards             []DiscardRecord
+	thinkingTime         [5]time.Duration
+	passedWin            [5]bool
+	riichi               [5]bool
+	tianTing             [5]bool
+	hasDiscarded         [5]bool
+	anyMeldDeclared      bool
+	pendingSupplement    bool
+	afterSupplement      bool
+	lastDrawnTile        Tile
+	pendingAddedKong     Tile
+	kongCount            int
+	kongSeats            [5]bool
+	pendingFourKongsDraw bool
 
 	selfPrompt      SelfDeclarePromptEvent
 	claimWindow     *ClaimWindow
@@ -201,7 +207,7 @@ func (e *TurnEngine) Apply(action PlayerAction, thinkElapsed time.Duration) ([]E
 	case PhaseWaitDraw:
 		return e.applyDraw(action)
 	case PhaseWaitSelfDeclare:
-		return e.applySelfDeclare(action)
+		return e.applySelfDeclare(action, thinkElapsed)
 	case PhaseWaitDiscard:
 		return e.applyDiscard(action, thinkElapsed)
 	case PhaseWaitClaims, PhaseWaitChowChoice:
@@ -292,30 +298,18 @@ func (e *TurnEngine) enterSelfCheck(seat Seat, drawnTile Tile, fromDraw bool) []
 	var events []Event
 	canWinNow := e.canSeatSelfWin(seat, drawnTile)
 
-	// QKMJ 0.95m strict passed-win: clears only when drawing/supplementing a non-flower tile
-	// that cannot win; drawing a winning tile keeps passed-win active and suppresses self-win.
-	if fromDraw && e.passedWin[seat] && !canWinNow {
+	// QKMJ 0.95m strict passed-win: clears only for non-Riichi seats when drawing/supplementing
+	// a non-flower tile that cannot win; Riichi passed-win is permanent for the rest of the hand.
+	if fromDraw && e.passedWin[seat] && !canWinNow && !e.riichi[seat] {
 		e.passedWin[seat] = false
 		events = append(events, PassedWinChangedEvent{Seat: seat, Passed: false})
 	}
 
-	canSelfWin := !e.passedWin[seat] && canWinNow
-	var concealedKongs, addedKongs []Tile
-	if e.wall.DrawableRemaining() > 0 {
-		concealedKongs = e.findConcealedKongTiles(seat)
-		addedKongs = e.findAddedKongTiles(seat)
-	}
-
-	if canSelfWin || len(concealedKongs) > 0 || len(addedKongs) > 0 {
-		prompt := SelfDeclarePromptEvent{
-			Seat:               seat,
-			CanSelfWin:         canSelfWin,
-			ConcealedKongTiles: concealedKongs,
-			AddedKongTiles:     addedKongs,
-		}
+	prompt, hasPrompt := e.buildSelfDeclarePrompt(seat, !e.passedWin[seat] && canWinNow)
+	if hasPrompt {
 		e.selfPrompt = prompt
 		e.phase = PhaseWaitSelfDeclare
-		return append(events, prompt)
+		return append(events, cloneSelfDeclarePrompt(prompt))
 	}
 
 	e.selfPrompt = SelfDeclarePromptEvent{}
@@ -323,7 +317,37 @@ func (e *TurnEngine) enterSelfCheck(seat Seat, drawnTile Tile, fromDraw bool) []
 	return events
 }
 
-func (e *TurnEngine) applySelfDeclare(action PlayerAction) ([]Event, error) {
+func (e *TurnEngine) buildSelfDeclarePrompt(seat Seat, canSelfWin bool) (SelfDeclarePromptEvent, bool) {
+	canNineTerminals := !e.anyMeldDeclared && !e.hasDiscarded[seat] && CountDistinctTerminalOrHonor(e.concealed[seat]) >= 9
+	var concealedKongs, addedKongs, riichiDiscards []Tile
+	if e.wall.DrawableRemaining() > 0 && !e.riichi[seat] && !e.pendingFourKongsDraw {
+		concealedKongs = e.findConcealedKongTiles(seat)
+		addedKongs = e.findAddedKongTiles(seat)
+		riichiDiscards = FindRiichiDiscardTiles(e.concealed[seat], e.melds[seat])
+	}
+	hasPrompt := canSelfWin || canNineTerminals || len(concealedKongs) > 0 || len(addedKongs) > 0 || len(riichiDiscards) > 0
+	if !hasPrompt {
+		return SelfDeclarePromptEvent{}, false
+	}
+	return SelfDeclarePromptEvent{
+		Seat:               seat,
+		CanSelfWin:         canSelfWin,
+		ConcealedKongTiles: concealedKongs,
+		AddedKongTiles:     addedKongs,
+		CanNineTerminals:   canNineTerminals,
+		CanRiichi:          len(riichiDiscards) > 0,
+		RiichiDiscardTiles: riichiDiscards,
+	}, true
+}
+
+func cloneSelfDeclarePrompt(p SelfDeclarePromptEvent) SelfDeclarePromptEvent {
+	p.ConcealedKongTiles = slices.Clone(p.ConcealedKongTiles)
+	p.AddedKongTiles = slices.Clone(p.AddedKongTiles)
+	p.RiichiDiscardTiles = slices.Clone(p.RiichiDiscardTiles)
+	return p
+}
+
+func (e *TurnEngine) applySelfDeclare(action PlayerAction, thinkElapsed time.Duration) ([]Event, error) {
 	if action.Kind != ActionSelfDeclare {
 		return nil, fmt.Errorf("expected self declare in WaitSelfDeclare: %w", ErrInvalidPhase)
 	}
@@ -351,6 +375,14 @@ func (e *TurnEngine) applySelfDeclare(action PlayerAction) ([]Event, error) {
 		return append(events, e.executeConcealedKong(action.Seat, action.Tile)...), nil
 	case SelfDeclareAddedKong:
 		return append(events, e.startAddedKong(action.Seat, action.Tile)...), nil
+	case SelfDeclareNineTerminals:
+		return append(events, e.finishHandDraw(HandEndNineTerminals)...), nil
+	case SelfDeclareRiichi:
+		riichiEvs, err := e.executeRiichi(action.Seat, action.Tile, thinkElapsed)
+		if err != nil {
+			return nil, err
+		}
+		return append(events, riichiEvs...), nil
 	case SelfDeclareUnknown:
 		return nil, ErrInvalidAction
 	default:
@@ -377,10 +409,48 @@ func (e *TurnEngine) validateSelfDeclareChoice(action PlayerAction) error {
 			return fmt.Errorf("added kong tile %v not available: %w", action.Tile, ErrInvalidClaimOption)
 		}
 		return nil
+	case SelfDeclareNineTerminals:
+		if !e.selfPrompt.CanNineTerminals {
+			return fmt.Errorf("nine terminals draw not available: %w", ErrInvalidClaimOption)
+		}
+		return nil
+	case SelfDeclareRiichi:
+		if !e.selfPrompt.CanRiichi || !slices.Contains(e.selfPrompt.RiichiDiscardTiles, action.Tile) {
+			return fmt.Errorf("riichi discard tile %v not available: %w", action.Tile, ErrInvalidClaimOption)
+		}
+		return nil
 	case SelfDeclareUnknown:
 		return ErrInvalidAction
 	default:
 		return ErrInvalidAction
+	}
+}
+
+func (e *TurnEngine) executeRiichi(seat Seat, discardTile Tile, thinkElapsed time.Duration) ([]Event, error) {
+	isTianTing := !e.anyMeldDeclared && !e.hasDiscarded[seat]
+	e.riichi[seat] = true
+	e.tianTing[seat] = isTianTing
+
+	discardEvs, err := e.executeDiscard(seat, discardTile, thinkElapsed)
+	if err != nil {
+		e.riichi[seat] = false
+		e.tianTing[seat] = false
+		return nil, err
+	}
+	return prependEvent(RiichiDeclaredEvent{Seat: seat, IsTianTing: isTianTing}, discardEvs), nil
+}
+
+func (e *TurnEngine) recordKong(seat Seat) {
+	e.kongCount++
+	e.kongSeats[seat] = true
+	distinct := 0
+	for _, s := range AllSeats {
+		if e.kongSeats[s] {
+			distinct++
+		}
+	}
+	if e.kongCount >= 4 && distinct >= 2 {
+		e.pendingFourKongsDraw = true
 	}
 }
 
@@ -390,6 +460,7 @@ func (e *TurnEngine) executeConcealedKong(seat Seat, tile Tile) []Event {
 	e.melds[seat] = append(e.melds[seat], meld)
 	e.anyMeldDeclared = true
 	e.afterSupplement = false
+	e.recordKong(seat)
 	return prependEvent(NewMeldDeclaredEvent(seat, meld, false), e.enterWaitDraw(seat, true))
 }
 
@@ -418,6 +489,7 @@ func (e *TurnEngine) finalizeAddedKong(seat Seat, tile Tile) []Event {
 	e.anyMeldDeclared = true
 	e.afterSupplement = false
 	e.pendingAddedKong = TileInvalid
+	e.recordKong(seat)
 	return prependEvent(NewMeldDeclaredEvent(seat, upgraded, false), e.enterWaitDraw(seat, true))
 }
 
@@ -428,28 +500,35 @@ func (e *TurnEngine) applyDiscard(action PlayerAction, thinkElapsed time.Duratio
 	if action.Seat != e.currentTurn {
 		return nil, fmt.Errorf("seat %v != active %v: %w", action.Seat, e.currentTurn, ErrNotYourTurn)
 	}
-	idx := slices.Index(e.concealed[action.Seat], action.Tile)
+	if e.riichi[action.Seat] && action.Tile != e.lastDrawnTile {
+		return nil, fmt.Errorf("riichi seat %v must discard %s: %w", action.Seat, e.lastDrawnTile, ErrRiichiLocked)
+	}
+	return e.executeDiscard(action.Seat, action.Tile, thinkElapsed)
+}
+
+func (e *TurnEngine) executeDiscard(seat Seat, tile Tile, thinkElapsed time.Duration) ([]Event, error) {
+	idx := slices.Index(e.concealed[seat], tile)
 	if idx < 0 {
-		return nil, fmt.Errorf("tile %s: %w", action.Tile, ErrTileNotInHand)
+		return nil, fmt.Errorf("tile %s: %w", tile, ErrTileNotInHand)
 	}
 
-	e.concealed[action.Seat] = slices.Delete(e.concealed[action.Seat], idx, idx+1)
-	e.hasDiscarded[action.Seat] = true
+	e.concealed[seat] = slices.Delete(e.concealed[seat], idx, idx+1)
+	e.hasDiscarded[seat] = true
 	e.afterSupplement = false
-	e.thinkingTime[action.Seat] += thinkElapsed
-	e.discards = append(e.discards, DiscardRecord{Seat: action.Seat, Tile: action.Tile})
+	e.thinkingTime[seat] += thinkElapsed
+	e.discards = append(e.discards, DiscardRecord{Seat: seat, Tile: tile})
 
 	events := []Event{
-		DiscardedEvent{Seat: action.Seat, Tile: action.Tile, ThinkingTime: e.thinkingTime[action.Seat]},
+		DiscardedEvent{Seat: seat, Tile: tile, ThinkingTime: e.thinkingTime[seat]},
 	}
 
-	cw := e.buildDiscardClaimWindow(action.Seat, action.Tile)
+	cw := e.buildDiscardClaimWindow(seat, tile)
 	if cw != nil {
 		e.claimWindow = cw
 		e.phase = PhaseWaitClaims
 		return append(events, cw.Prompts()...), nil
 	}
-	return append(events, e.advanceAfterNoClaim(action.Seat)...), nil
+	return append(events, e.advanceAfterNoClaim(seat)...), nil
 }
 
 func (e *TurnEngine) applyClaim(action PlayerAction) ([]Event, error) {
@@ -524,6 +603,9 @@ func (e *TurnEngine) resolveFlowerClaim(cw *ClaimWindow, res ClaimResolution) []
 func (e *TurnEngine) resolveRobKongClaim(cw *ClaimWindow, res ClaimResolution) []Event {
 	kongTile := e.pendingAddedKong
 	e.pendingAddedKong = TileInvalid
+	if res.IsTripleRon {
+		return e.finishHandDraw(HandEndTripleRon)
+	}
 	if res.Kind == ClaimWin {
 		return e.finishHandByWin(WinRobKong, res.Winner, cw.TriggerSeat(), kongTile)
 	}
@@ -533,6 +615,10 @@ func (e *TurnEngine) resolveRobKongClaim(cw *ClaimWindow, res ClaimResolution) [
 func (e *TurnEngine) resolveDiscardClaim(cw *ClaimWindow, res ClaimResolution) []Event {
 	triggerSeat := cw.TriggerSeat()
 	tile := cw.TriggerTile()
+
+	if res.IsTripleRon {
+		return e.finishHandDraw(HandEndTripleRon)
+	}
 
 	switch res.Kind {
 	case ClaimWin:
@@ -544,6 +630,7 @@ func (e *TurnEngine) resolveDiscardClaim(cw *ClaimWindow, res ClaimResolution) [
 		e.melds[res.Winner] = append(e.melds[res.Winner], meld)
 		e.anyMeldDeclared = true
 		e.afterSupplement = false
+		e.recordKong(res.Winner)
 		return prependEvent(NewMeldDeclaredEvent(res.Winner, meld, true), e.enterWaitDraw(res.Winner, true))
 	case ClaimPong:
 		e.popLastDiscard()
@@ -579,10 +666,27 @@ func prependEvent(first Event, rest []Event) []Event {
 }
 
 func (e *TurnEngine) advanceAfterNoClaim(discarder Seat) []Event {
+	if e.isFourWindsDraw() {
+		return e.finishHandDraw(HandEndFourWinds)
+	}
+	if e.pendingFourKongsDraw {
+		return e.finishHandDraw(HandEndFourKongs)
+	}
 	if e.wall.DrawableRemaining() == 0 {
 		return e.finishHandExhausted()
 	}
 	return e.enterWaitDraw(discarder.Next(), false)
+}
+
+func (e *TurnEngine) isFourWindsDraw() bool {
+	if e.anyMeldDeclared || len(e.discards) != 4 {
+		return false
+	}
+	first := e.discards[0].Tile
+	if !first.IsWind() {
+		return false
+	}
+	return e.discards[1].Tile == first && e.discards[2].Tile == first && e.discards[3].Tile == first
 }
 
 func (e *TurnEngine) enterWaitDraw(seat Seat, isSupplement bool) []Event {
@@ -629,6 +733,8 @@ func (e *TurnEngine) finishHandByWin(kind WinKind, winner, payer Seat, winTile T
 		IsAfterSupplement:    kind == WinSelfDraw && e.afterSupplement,
 		IsLastDrawable:       e.wall.DrawableRemaining() == 0,
 		IsFirstRoundUnbroken: firstRound,
+		IsRiichi:             e.riichi[winner],
+		IsTianTing:           e.tianTing[winner],
 		Base:                 e.base,
 		PerFan:               e.perFan,
 	})
@@ -643,14 +749,18 @@ func (e *TurnEngine) finishHandByWin(kind WinKind, winner, payer Seat, winTile T
 }
 
 func (e *TurnEngine) finishHandExhausted() []Event {
+	return e.finishHandDraw(HandEndExhausted)
+}
+
+func (e *TurnEngine) finishHandDraw(reason HandEndReason) []Event {
 	e.phase = PhaseHandEnded
-	e.endReason = HandEndExhausted
+	e.endReason = reason
 	e.endScore = nil
-	return []Event{HandEndedEvent{Reason: HandEndExhausted}}
+	return []Event{HandEndedEvent{Reason: reason}}
 }
 
 func (e *TurnEngine) buildDiscardClaimWindow(discarder Seat, tile Tile) *ClaimWindow {
-	canNonWin := e.wall.DrawableRemaining() > 0
+	canNonWin := e.wall.DrawableRemaining() > 0 && !e.pendingFourKongsDraw
 	var seatOpts []SeatClaimOptions
 
 	seat := discarder.Next()
@@ -669,7 +779,7 @@ func (e *TurnEngine) buildDiscardClaimWindow(discarder Seat, tile Tile) *ClaimWi
 
 func (e *TurnEngine) computeDiscardSeatOptions(seat, discarder Seat, tile Tile, canNonWin bool) SeatClaimOptions {
 	so := SeatClaimOptions{Seat: seat}
-	if canNonWin {
+	if canNonWin && !e.riichi[seat] {
 		if seat == discarder.Next() {
 			if chows := ComputeChowOptions(e.concealed[seat], tile); len(chows) > 0 {
 				so.Options = append(so.Options, ClaimChow)
@@ -865,4 +975,20 @@ func (e *TurnEngine) PassedWin(seat Seat) bool {
 // HandResult returns the terminal reason and score result once PhaseHandEnded is reached.
 func (e *TurnEngine) HandResult() (HandEndReason, *ScoreResult) {
 	return e.endReason, e.endScore
+}
+
+// Riichi reports whether seat has declared Riichi in this hand.
+func (e *TurnEngine) Riichi(seat Seat) bool {
+	if !seat.Valid() {
+		return false
+	}
+	return e.riichi[seat]
+}
+
+// TianTing reports whether seat declared first-round unbroken TianTing in this hand.
+func (e *TurnEngine) TianTing(seat Seat) bool {
+	if !seat.Valid() {
+		return false
+	}
+	return e.tianTing[seat]
 }

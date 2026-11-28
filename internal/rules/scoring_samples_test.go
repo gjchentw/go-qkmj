@@ -196,12 +196,19 @@ func TestScore_QKMJGoldenSamples(t *testing.T) {
 			wantTotal: 6,
 		},
 		{
-			name:      "A19_三色同刻",
+			name:      "A19_三色同刻_非門清",
 			concealed: "六萬 七萬 八萬 三索 三索 三索 四索 五索 三筒 三筒 三筒 白板 白板",
 			melds:     []rules.Meld{pong(rules.Wan3)},
 			winTile:   "六索",
-			wantFans:  []fanExpectation{{rules.FanThreeSuitedTriplets, 2}},
-			wantTotal: 2,
+			wantFans:  []fanExpectation{{rules.FanThreeSuitedTriplets, 1}},
+			wantTotal: 1,
+		},
+		{
+			name:      "A19b_三色同刻_門清",
+			concealed: "三萬 三萬 三萬 六萬 七萬 八萬 三索 三索 三索 四索 五索 三筒 三筒 三筒 白板 白板",
+			winTile:   "六索",
+			wantFans:  []fanExpectation{{rules.FanConcealed, 1}, {rules.FanThreeConcealedTriplets, 2}, {rules.FanThreeSuitedTriplets, 2}},
+			wantTotal: 5,
 		},
 		{
 			name:      "A20_混一色",
@@ -262,8 +269,8 @@ func TestScore_QKMJGoldenSamples(t *testing.T) {
 			concealed: "一索 一索 九索 九索 九筒 九筒 九筒",
 			melds:     []rules.Meld{pong(rules.Wan1), pong(rules.Wan9), pong(rules.Tong1)},
 			winTile:   "一索",
-			wantFans:  []fanExpectation{{rules.FanPureTerminals, 8}, {rules.FanThreeSuitedTriplets, 2}},
-			wantTotal: 10,
+			wantFans:  []fanExpectation{{rules.FanPureTerminals, 8}, {rules.FanThreeSuitedTriplets, 1}},
+			wantTotal: 9,
 		},
 		{
 			name:      "A28_紅中",

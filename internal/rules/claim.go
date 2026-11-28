@@ -22,13 +22,14 @@ type SeatClaimOptions struct {
 	FlowerPayer   Seat
 }
 
-// ClaimResolution is the final public arbitration result once all prompted seats have decided.
+// ClaimResolution is the final public arbitration result once a claim window resolves.
 type ClaimResolution struct {
 	Kind           ClaimKind
 	Winner         Seat
 	Chow           ChowOption
 	FlowerWinKind  WinKind
 	FlowerPayer    Seat
+	IsTripleRon    bool
 	PassedWinSeats []Seat
 }
 
@@ -38,8 +39,8 @@ type seatDecision struct {
 	chow    ChowOption
 }
 
-// ClaimWindow manages parallel waiting, optional two-step chow selection, and
-// priority/head-bump arbitration for Discard, RobKong, and Flower claim windows.
+// ClaimWindow manages parallel waiting, optional two-step chow selection, 0.95o early resolution,
+// Triple Ron detection, and priority/head-bump arbitration for Discard, RobKong, and Flower windows.
 type ClaimWindow struct {
 	kind           ClaimWindowKind
 	triggerSeat    Seat
@@ -48,6 +49,7 @@ type ClaimWindow struct {
 	optionsBySeat  map[Seat]SeatClaimOptions
 	decisions      map[Seat]seatDecision
 	waitingChowFor Seat
+	resolved       bool
 }
 
 // ComputeChowOptions returns all canonical 3-tile sequences that concealed tiles can form with target.
@@ -152,8 +154,12 @@ func (w *ClaimWindow) Prompts() []Event {
 	return events
 }
 
-// IsComplete reports whether all prompted seats have finalized their decisions.
+// IsComplete reports whether the claim window has resolved (all decided or early-resolved).
 func (w *ClaimWindow) IsComplete() bool {
+	return w.resolved || w.allDecided()
+}
+
+func (w *ClaimWindow) allDecided() bool {
 	if w.waitingChowFor != SeatUnknown {
 		return false
 	}
@@ -168,8 +174,11 @@ func (w *ClaimWindow) IsComplete() bool {
 // Submit records an immutable claim decision for seat.
 // When seat selects ClaimChow with multiple choices and an empty ChowOption, it transitions
 // seat into WaitChowChoice and returns a private ChowChoicePromptEvent.
-// When all prompted seats have finalized, Submit returns the resolved ClaimResolution.
+// When all prompted seats have finalized or 0.95o early resolution triggers, Submit returns ClaimResolution.
 func (w *ClaimWindow) Submit(seat Seat, claim ClaimKind, chow ChowOption) ([]Event, *ClaimResolution, error) {
+	if w.resolved {
+		return nil, nil, fmt.Errorf("window already resolved: %w", ErrClaimAlreadyDecided)
+	}
 	so, ok := w.optionsBySeat[seat]
 	if !ok {
 		return nil, nil, fmt.Errorf("seat %v: %w", seat, ErrClaimNotPending)
@@ -231,11 +240,87 @@ func (w *ClaimWindow) submitChowChoice(
 }
 
 func (w *ClaimWindow) maybeResolve() *ClaimResolution {
-	if !w.IsComplete() {
+	if !w.allDecided() && !w.canEarlyResolve() {
 		return nil
 	}
 	res := w.resolve()
+	w.waitingChowFor = SeatUnknown
+	w.resolved = true
 	return &res
+}
+
+type earlyResolveSummary struct {
+	bestKind           ClaimKind
+	bestWinDist        int
+	winCount           int
+	undecidedCanWin    int
+	undecidedCanKong   int
+	earlierUndecidedWn bool
+}
+
+func (w *ClaimWindow) canEarlyResolve() bool {
+	s := w.summarizeEarlyResolve()
+	switch s.bestKind {
+	case ClaimWin:
+		canTripleRon := w.kind == ClaimWindowDiscard || w.kind == ClaimWindowRobKong
+		if canTripleRon && s.winCount+s.undecidedCanWin >= 3 {
+			return false
+		}
+		return !s.earlierUndecidedWn
+	case ClaimKong:
+		return s.undecidedCanWin == 0
+	case ClaimPong:
+		return s.undecidedCanWin == 0 && s.undecidedCanKong == 0
+	case ClaimUnknown, ClaimPass, ClaimChow:
+		return false
+	default:
+		return false
+	}
+}
+
+func (w *ClaimWindow) summarizeEarlyResolve() earlyResolveSummary {
+	order := w.arbitrationSeatOrder()
+	s := w.tallySubmittedClaims(order)
+	w.tallyUndecidedClaims(order, &s)
+	return s
+}
+
+func (w *ClaimWindow) tallySubmittedClaims(order []Seat) earlyResolveSummary {
+	s := earlyResolveSummary{bestWinDist: -1}
+	for dist, seat := range order {
+		dec, ok := w.decisions[seat]
+		if !ok || !dec.decided || dec.claim == ClaimPass {
+			continue
+		}
+		if dec.claim > s.bestKind {
+			s.bestKind = dec.claim
+		}
+		if dec.claim == ClaimWin {
+			s.winCount++
+			if s.bestWinDist < 0 {
+				s.bestWinDist = dist
+			}
+		}
+	}
+	return s
+}
+
+func (w *ClaimWindow) tallyUndecidedClaims(order []Seat, s *earlyResolveSummary) {
+	for dist, seat := range order {
+		so, prompted := w.optionsBySeat[seat]
+		if !prompted || w.decisions[seat].decided || seat == w.waitingChowFor {
+			continue
+		}
+		if slices.Contains(so.Options, ClaimWin) {
+			s.undecidedCanWin++
+			if s.bestWinDist >= 0 && dist < s.bestWinDist {
+				s.earlierUndecidedWn = true
+			}
+		}
+		if slices.Contains(so.Options, ClaimKong) {
+			s.undecidedCanKong++
+		}
+	}
 }
 
 func (w *ClaimWindow) resolve() ClaimResolution {
@@ -244,13 +329,15 @@ func (w *ClaimWindow) resolve() ClaimResolution {
 		PassedWinSeats: w.collectPassedWinSeats(),
 	}
 
-	// Evaluate candidates in clockwise order from triggerSeat.Next() so head-bump (截胡)
-	// naturally selects the closest clockwise claimant on equal priority.
 	order := w.arbitrationSeatOrder()
+	winCount := 0
 	for _, seat := range order {
 		dec, ok := w.decisions[seat]
 		if !ok || !dec.decided || dec.claim == ClaimPass {
 			continue
+		}
+		if dec.claim == ClaimWin {
+			winCount++
 		}
 		if dec.claim > res.Kind {
 			so := w.optionsBySeat[seat]
@@ -260,6 +347,12 @@ func (w *ClaimWindow) resolve() ClaimResolution {
 			res.FlowerWinKind = so.FlowerWinKind
 			res.FlowerPayer = so.FlowerPayer
 		}
+	}
+
+	if (w.kind == ClaimWindowDiscard || w.kind == ClaimWindowRobKong) && winCount == 3 {
+		res.Kind = ClaimWin
+		res.Winner = SeatUnknown
+		res.IsTripleRon = true
 	}
 	return res
 }
@@ -287,7 +380,8 @@ func (w *ClaimWindow) collectPassedWinSeats() []Seat {
 		if !slices.Contains(so.Options, ClaimWin) {
 			continue
 		}
-		if w.decisions[seat].claim != ClaimWin {
+		dec := w.decisions[seat]
+		if (dec.decided && dec.claim != ClaimWin) || seat == w.waitingChowFor {
 			passed = append(passed, seat)
 		}
 	}

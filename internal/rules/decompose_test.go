@@ -1,6 +1,7 @@
 package rules_test
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/gjchentw/go-qkmj/internal/rules"
@@ -230,5 +231,91 @@ func TestDecompose_NoDuplicateTripletSequenceOrdering(t *testing.T) {
 	decomps := rules.Decompose(concealed, nil, rules.Tong8)
 	if len(decomps) != 1 {
 		t.Fatalf("len(Decompose) = %d, want 1 (deduplicated canonical order)", len(decomps))
+	}
+}
+
+func TestFindRiichiDiscardTiles(t *testing.T) {
+	t.Parallel()
+
+	t.Run("identifies exact tenpai discards for 17-tile concealed hand", func(t *testing.T) {
+		t.Parallel()
+		// 4 complete groups + pair (WhiteDragon) + 2-tile wait (Suo5, Suo6) + extra junk (EastWind) = 17 tiles.
+		// Discarding EastWind leaves tenpai waiting Suo4/Suo7.
+		// Wait: discarding Suo5 or Suo6 would leave EastWind + single tile (not tenpai).
+		hand := []rules.Tile{
+			rules.Wan1, rules.Wan2, rules.Wan3,
+			rules.Wan4, rules.Wan5, rules.Wan6,
+			rules.Tong1, rules.Tong2, rules.Tong3,
+			rules.Tong7, rules.Tong8, rules.Tong9,
+			rules.WhiteDragon, rules.WhiteDragon,
+			rules.Suo5, rules.Suo6, rules.EastWind,
+		}
+		got := rules.FindRiichiDiscardTiles(hand, nil)
+		want := []rules.Tile{rules.EastWind}
+		if !slices.Equal(got, want) {
+			t.Fatalf("FindRiichiDiscardTiles() = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("concealed kong preserves riichi eligibility while exposed pong disables it", func(t *testing.T) {
+		t.Parallel()
+		concealed := []rules.Tile{
+			rules.Wan1, rules.Wan2, rules.Wan3,
+			rules.Wan4, rules.Wan5, rules.Wan6,
+			rules.Tong1, rules.Tong2, rules.Tong3,
+			rules.WhiteDragon, rules.WhiteDragon,
+			rules.Suo5, rules.Suo6, rules.EastWind,
+		}
+		ck := []rules.Meld{{
+			Kind:  rules.MeldConcealedKong,
+			Tiles: []rules.Tile{rules.RedDragon, rules.RedDragon, rules.RedDragon, rules.RedDragon},
+		}}
+		if got := rules.FindRiichiDiscardTiles(concealed, ck); !slices.Equal(got, []rules.Tile{rules.EastWind}) {
+			t.Fatalf("with concealed kong = %v, want [EastWind]", got)
+		}
+
+		pong := []rules.Meld{{
+			Kind:     rules.MeldPong,
+			Tiles:    []rules.Tile{rules.RedDragon, rules.RedDragon, rules.RedDragon},
+			FromSeat: rules.Seat2,
+		}}
+		if got := rules.FindRiichiDiscardTiles(concealed, pong); len(got) != 0 {
+			t.Fatalf("with exposed pong must not allow riichi, got %v", got)
+		}
+	})
+
+	t.Run("non-tenpai hand returns nil", func(t *testing.T) {
+		t.Parallel()
+		hand := []rules.Tile{
+			rules.Wan1, rules.Wan3, rules.Wan5, rules.Wan7, rules.Wan9,
+			rules.Suo1, rules.Suo3, rules.Suo5, rules.Suo7, rules.Suo9,
+			rules.Tong1, rules.Tong3, rules.Tong5, rules.Tong7, rules.Tong9,
+			rules.EastWind, rules.SouthWind,
+		}
+		if got := rules.FindRiichiDiscardTiles(hand, nil); len(got) != 0 {
+			t.Fatalf("non-tenpai hand returned %v, want empty", got)
+		}
+	})
+}
+
+func TestCountDistinctTerminalOrHonor(t *testing.T) {
+	t.Parallel()
+
+	nineDistinct := []rules.Tile{
+		rules.Wan1, rules.Wan9, rules.Suo1, rules.Suo9, rules.Tong1, rules.Tong9,
+		rules.EastWind, rules.SouthWind, rules.RedDragon,
+		rules.Wan2, rules.Wan3, rules.Suo4, rules.Suo5, rules.Tong6, rules.Tong7, rules.Wan4, rules.Wan5,
+	}
+	if got := rules.CountDistinctTerminalOrHonor(nineDistinct); got != 9 {
+		t.Fatalf("CountDistinctTerminalOrHonor(9 distinct) = %d, want 9", got)
+	}
+
+	eightWithDups := []rules.Tile{
+		rules.Wan1, rules.Wan9, rules.Suo1, rules.Suo9, rules.Tong1, rules.Tong9,
+		rules.EastWind, rules.EastWind, rules.EastWind, rules.SouthWind,
+		rules.Wan2, rules.Wan3, rules.Suo4, rules.Suo5, rules.Tong6, rules.Tong7, rules.Wan4,
+	}
+	if got := rules.CountDistinctTerminalOrHonor(eightWithDups); got != 8 {
+		t.Fatalf("CountDistinctTerminalOrHonor(8 distinct + dups) = %d, want 8", got)
 	}
 }

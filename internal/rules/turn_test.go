@@ -67,9 +67,9 @@ func defaultTurnHands(t *testing.T) map[rules.Seat][]rules.Tile {
 	t.Helper()
 	return map[rules.Seat][]rules.Tile{
 		rules.Seat1: mustTiles(t, "一萬 二萬 三萬 四萬 五萬 六萬 七索 八索 九索 二筒 三筒 四筒 六筒 七筒 東風 南風 西風"),
-		rules.Seat2: mustTiles(t, "一萬 二萬 三萬 四萬 五萬 六萬 一索 二索 三索 四索 五索 六索 一筒 二筒 三筒 北風"),
-		rules.Seat3: mustTiles(t, "七萬 八萬 九萬 七萬 八萬 九萬 四索 五索 六索 七索 八索 九索 四筒 五筒 六筒 紅中"),
-		rules.Seat4: mustTiles(t, "一萬 二萬 三萬 四萬 五萬 六萬 一索 二索 三索 四索 五索 六索 七筒 八筒 九筒 白板"),
+		rules.Seat2: mustTiles(t, "一萬 二萬 三萬 四萬 五萬 六萬 一索 三索 五索 四索 五索 六索 一筒 二筒 三筒 北風"),
+		rules.Seat3: mustTiles(t, "七萬 八萬 九萬 七萬 八萬 九萬 四索 五索 六索 七索 八索 九索 二筒 五筒 八筒 紅中"),
+		rules.Seat4: mustTiles(t, "一萬 二萬 三萬 四萬 五萬 六萬 一索 二索 三索 四索 五索 六索 一筒 五筒 九筒 白板"),
 	}
 }
 
@@ -357,8 +357,10 @@ func TestTurnEngine_AddedKongRobKongWin(t *testing.T) {
 		{Seat: rules.Seat3, Kind: rules.ActionDraw},
 		{Seat: rules.Seat3, Kind: rules.ActionDiscard, Tile: rules.GreenDragon},
 		{Seat: rules.Seat4, Kind: rules.ActionDraw},
+		{Seat: rules.Seat4, Kind: rules.ActionSelfDeclare, SelfDeclare: rules.SelfDeclarePass},
 		{Seat: rules.Seat4, Kind: rules.ActionDiscard, Tile: rules.WhiteDragon},
 		{Seat: rules.Seat1, Kind: rules.ActionDraw},
+		{Seat: rules.Seat1, Kind: rules.ActionSelfDeclare, SelfDeclare: rules.SelfDeclarePass},
 		{Seat: rules.Seat1, Kind: rules.ActionDiscard, Tile: rules.EastWind},
 		{Seat: rules.Seat2, Kind: rules.ActionDraw},
 	} {
@@ -450,7 +452,7 @@ func TestTurnEngine_Strict095mPassedWin_SelfWinAndDrawCycle(t *testing.T) {
 	hands := map[rules.Seat][]rules.Tile{
 		rules.Seat1: mustTiles(t, "一萬 二萬 三萬 四萬 五萬 六萬 七索 八索 九索 二筒 三筒 四筒 六筒 七筒 白板 白板 八筒"),
 		rules.Seat2: mustTiles(t, "一萬 二萬 三萬 四萬 五萬 六萬 七索 八索 九索 二筒 三筒 四筒 六筒 七筒 紅中 紅中"),
-		rules.Seat3: mustTiles(t, "七萬 八萬 九萬 七萬 八萬 九萬 一索 二索 三索 四索 五索 六索 一筒 二筒 三筒 東風"),
+		rules.Seat3: mustTiles(t, "七萬 八萬 九萬 七萬 八萬 九萬 一索 二索 三索 四索 五索 六索 一筒 五筒 九筒 東風"),
 		rules.Seat4: mustTiles(t, "一索 二索 三索 四索 五索 六索 七萬 八萬 九萬 一筒 二筒 三筒 五筒 五筒 南風 西風"),
 	}
 	wall := makePreparedWall(t, hands, nil, []rules.Tile{
@@ -500,9 +502,19 @@ func TestTurnEngine_Strict095mPassedWin_SelfWinAndDrawCycle(t *testing.T) {
 	}
 
 	// Seat2 draws FlowerSpring -> auto-supplements winning tile Tong8 -> MUST NOT offer self-win and MUST stay passed-win!
+	// Under 95p3+, Seat2 is still concealed tenpai so CanRiichi=true is offered while CanSelfWin=false.
 	evDrawWinWhilePassed, err := eng.Apply(rules.PlayerAction{Seat: rules.Seat2, Kind: rules.ActionDraw}, 0)
 	if err != nil {
 		t.Fatalf("Seat2 draw err = %v", err)
+	}
+	if eng.Phase() == rules.PhaseWaitSelfDeclare {
+		sp := findSelfDeclarePrompt(t, evDrawWinWhilePassed, rules.Seat2)
+		if sp.CanSelfWin {
+			t.Fatalf("CanSelfWin must be false while passed-win, got %+v", sp)
+		}
+		if _, err := eng.Apply(rules.PlayerAction{Seat: rules.Seat2, Kind: rules.ActionSelfDeclare, SelfDeclare: rules.SelfDeclarePass}, 0); err != nil {
+			t.Fatalf("Seat2 pass riichi err = %v", err)
+		}
 	}
 	if eng.Phase() != rules.PhaseWaitDiscard {
 		t.Fatalf("Phase() = %v, want PhaseWaitDiscard (self-win suppressed during passed-win)", eng.Phase())
@@ -520,8 +532,10 @@ func TestTurnEngine_Strict095mPassedWin_SelfWinAndDrawCycle(t *testing.T) {
 		{Seat: rules.Seat3, Kind: rules.ActionDraw},
 		{Seat: rules.Seat3, Kind: rules.ActionDiscard, Tile: rules.NorthWind},
 		{Seat: rules.Seat4, Kind: rules.ActionDraw},
+		{Seat: rules.Seat4, Kind: rules.ActionSelfDeclare, SelfDeclare: rules.SelfDeclarePass},
 		{Seat: rules.Seat4, Kind: rules.ActionDiscard, Tile: rules.SouthWind},
 		{Seat: rules.Seat1, Kind: rules.ActionDraw},
+		{Seat: rules.Seat1, Kind: rules.ActionSelfDeclare, SelfDeclare: rules.SelfDeclarePass},
 		{Seat: rules.Seat1, Kind: rules.ActionDiscard, Tile: rules.WestWind},
 	} {
 		if _, err := eng.Apply(act, 0); err != nil {
