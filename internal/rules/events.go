@@ -1,6 +1,9 @@
 package rules
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // EventAudience specifies whether an event is broadcast publicly or delivered privately to one seat.
 type EventAudience uint8
@@ -217,3 +220,166 @@ func (HandEndedEvent) Audience() EventAudience { return AudiencePublic }
 // TargetSeat returns SeatUnknown for public events.
 func (HandEndedEvent) TargetSeat() Seat { return SeatUnknown }
 func (HandEndedEvent) rulesEvent()      {}
+
+// MatchStartedEvent publicly announces the start of a new 4-player match.
+type MatchStartedEvent struct {
+	RoundWind    Wind
+	Dealer       Seat
+	DealerStreak int
+}
+
+// Audience returns AudiencePublic.
+func (MatchStartedEvent) Audience() EventAudience { return AudiencePublic }
+
+// TargetSeat returns SeatUnknown for public events.
+func (MatchStartedEvent) TargetSeat() Seat { return SeatUnknown }
+func (MatchStartedEvent) rulesEvent()      {}
+
+// HandStartedEvent publicly announces a hand's round wind, dealer, streak, random door seat, and seat winds.
+type HandStartedEvent struct {
+	RoundWind    Wind
+	Dealer       Seat
+	DealerStreak int
+	DoorSeat     Seat
+	SeatWinds    map[Seat]Wind
+}
+
+// Audience returns AudiencePublic.
+func (HandStartedEvent) Audience() EventAudience { return AudiencePublic }
+
+// TargetSeat returns SeatUnknown for public events.
+func (HandStartedEvent) TargetSeat() Seat { return SeatUnknown }
+func (HandStartedEvent) rulesEvent()      {}
+
+// HandDealtPublicEvent publicly announces per-seat dealt tile counts and remaining drawable wall tiles.
+type HandDealtPublicEvent struct {
+	HandCounts        map[Seat]int
+	DrawableRemaining int
+}
+
+// Audience returns AudiencePublic.
+func (HandDealtPublicEvent) Audience() EventAudience { return AudiencePublic }
+
+// TargetSeat returns SeatUnknown for public events.
+func (HandDealtPublicEvent) TargetSeat() Seat { return SeatUnknown }
+func (HandDealtPublicEvent) rulesEvent()      {}
+
+// HandDealtEvent privately delivers a seat's initial dealt hand.
+type HandDealtEvent struct {
+	Seat  Seat
+	Tiles []Tile
+}
+
+// Audience returns AudiencePrivate.
+func (HandDealtEvent) Audience() EventAudience { return AudiencePrivate }
+
+// TargetSeat returns the recipient seat.
+func (e HandDealtEvent) TargetSeat() Seat { return e.Seat }
+func (HandDealtEvent) rulesEvent()        {}
+
+// SeatReveal contains a seat's full concealed hand and unmasked melds revealed at hand end.
+type SeatReveal struct {
+	Concealed []Tile
+	Melds     []PublicMeld
+}
+
+// HandsRevealedEvent publicly reveals all four seats' concealed hands and concealed kong faces
+// when a hand finishes by win or exhaustion.
+type HandsRevealedEvent struct {
+	Seats map[Seat]SeatReveal
+}
+
+// NewHandsRevealedEvent builds a HandsRevealedEvent with defensive copies and unmasked concealed kongs.
+func NewHandsRevealedEvent(concealed map[Seat][]Tile, melds map[Seat][]Meld) HandsRevealedEvent {
+	seats := make(map[Seat]SeatReveal, len(AllSeats))
+	for _, s := range AllSeats {
+		ms := melds[s]
+		pubMelds := make([]PublicMeld, len(ms))
+		for i, m := range ms {
+			pubMelds[i] = ProjectMeld(m, true)
+		}
+		seats[s] = SeatReveal{
+			Concealed: slices.Clone(concealed[s]),
+			Melds:     pubMelds,
+		}
+	}
+	return HandsRevealedEvent{Seats: seats}
+}
+
+// Audience returns AudiencePublic.
+func (HandsRevealedEvent) Audience() EventAudience { return AudiencePublic }
+
+// TargetSeat returns SeatUnknown for public events.
+func (HandsRevealedEvent) TargetSeat() Seat { return SeatUnknown }
+func (HandsRevealedEvent) rulesEvent()      {}
+
+// SeatBalanceChange captures one seat's before/delta/after balance transition for settlement.
+type SeatBalanceChange struct {
+	Before int
+	Delta  int
+	After  int
+}
+
+// HandSettledEvent publicly announces post-reveal settlement outcomes and balance changes.
+type HandSettledEvent struct {
+	Reason               HandEndReason
+	Score                *ScoreResult
+	Balances             map[Seat]SeatBalanceChange
+	IncrementPlayedCount bool
+}
+
+// Audience returns AudiencePublic.
+func (HandSettledEvent) Audience() EventAudience { return AudiencePublic }
+
+// TargetSeat returns SeatUnknown for public events.
+func (HandSettledEvent) TargetSeat() Seat { return SeatUnknown }
+func (HandSettledEvent) rulesEvent()      {}
+
+// WaitReadyEvent publicly announces that the hand has entered WaitReady for all four seats.
+type WaitReadyEvent struct{}
+
+// Audience returns AudiencePublic.
+func (WaitReadyEvent) Audience() EventAudience { return AudiencePublic }
+
+// TargetSeat returns SeatUnknown for public events.
+func (WaitReadyEvent) TargetSeat() Seat { return SeatUnknown }
+func (WaitReadyEvent) rulesEvent()      {}
+
+// PlayerReadyEvent publicly announces that one seat confirmed readiness for the next hand.
+type PlayerReadyEvent struct {
+	Seat Seat
+}
+
+// Audience returns AudiencePublic.
+func (PlayerReadyEvent) Audience() EventAudience { return AudiencePublic }
+
+// TargetSeat returns SeatUnknown for public events.
+func (PlayerReadyEvent) TargetSeat() Seat { return SeatUnknown }
+func (PlayerReadyEvent) rulesEvent()      {}
+
+// MatchProgressedEvent publicly announces the updated round wind, dealer, and dealer streak for the next hand.
+type MatchProgressedEvent struct {
+	RoundWind    Wind
+	Dealer       Seat
+	DealerStreak int
+}
+
+// Audience returns AudiencePublic.
+func (MatchProgressedEvent) Audience() EventAudience { return AudiencePublic }
+
+// TargetSeat returns SeatUnknown for public events.
+func (MatchProgressedEvent) TargetSeat() Seat { return SeatUnknown }
+func (MatchProgressedEvent) rulesEvent()      {}
+
+// MatchAbortedEvent publicly announces that a player left, aborting the match and returning to gathering.
+type MatchAbortedEvent struct {
+	Leaver      Seat
+	HandAborted bool
+}
+
+// Audience returns AudiencePublic.
+func (MatchAbortedEvent) Audience() EventAudience { return AudiencePublic }
+
+// TargetSeat returns SeatUnknown for public events.
+func (MatchAbortedEvent) TargetSeat() Seat { return SeatUnknown }
+func (MatchAbortedEvent) rulesEvent()      {}

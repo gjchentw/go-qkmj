@@ -20,6 +20,15 @@ func TestEvents_AudienceAndTargetSeat(t *testing.T) {
 		{name: "MeldDeclaredEvent", ev: rules.NewMeldDeclaredEvent(rules.Seat2, rules.Meld{Kind: rules.MeldPong, Tiles: []rules.Tile{rules.Wan1, rules.Wan1, rules.Wan1}}, true)},
 		{name: "DiscardedEvent", ev: rules.DiscardedEvent{Seat: rules.Seat1, Tile: rules.Suo5, ThinkingTime: 3 * time.Second}},
 		{name: "HandEndedEvent", ev: rules.HandEndedEvent{Reason: rules.HandEndExhausted}},
+		{name: "MatchStartedEvent", ev: rules.MatchStartedEvent{RoundWind: rules.WindEast, Dealer: rules.Seat1, DealerStreak: 0}},
+		{name: "HandStartedEvent", ev: rules.HandStartedEvent{RoundWind: rules.WindEast, Dealer: rules.Seat1, DoorSeat: rules.Seat3}},
+		{name: "HandDealtPublicEvent", ev: rules.HandDealtPublicEvent{DrawableRemaining: 63}},
+		{name: "HandsRevealedEvent", ev: rules.HandsRevealedEvent{}},
+		{name: "HandSettledEvent", ev: rules.HandSettledEvent{Reason: rules.HandEndExhausted}},
+		{name: "WaitReadyEvent", ev: rules.WaitReadyEvent{}},
+		{name: "PlayerReadyEvent", ev: rules.PlayerReadyEvent{Seat: rules.Seat2}},
+		{name: "MatchProgressedEvent", ev: rules.MatchProgressedEvent{RoundWind: rules.WindSouth, Dealer: rules.Seat1, DealerStreak: 0}},
+		{name: "MatchAbortedEvent", ev: rules.MatchAbortedEvent{Leaver: rules.Seat4, HandAborted: true}},
 	}
 
 	for _, tt := range publicEvents {
@@ -46,6 +55,7 @@ func TestEvents_AudienceAndTargetSeat(t *testing.T) {
 		{name: "ClaimPromptEvent", ev: rules.ClaimPromptEvent{Seat: rules.Seat4, WindowKind: rules.ClaimWindowDiscard, Options: []rules.ClaimKind{rules.ClaimPong}}, wantSeat: rules.Seat4},
 		{name: "ChowChoicePromptEvent", ev: rules.ChowChoicePromptEvent{Seat: rules.Seat2}, wantSeat: rules.Seat2},
 		{name: "PassedWinChangedEvent", ev: rules.PassedWinChangedEvent{Seat: rules.Seat3, Passed: true}, wantSeat: rules.Seat3},
+		{name: "HandDealtEvent", ev: rules.HandDealtEvent{Seat: rules.Seat1, Tiles: []rules.Tile{rules.Wan1}}, wantSeat: rules.Seat1},
 	}
 
 	for _, tt := range privateEvents {
@@ -78,5 +88,41 @@ func TestNewMeldDeclaredEvent_HidesConcealedKongFaces(t *testing.T) {
 	}
 	if len(ev.Meld.Tiles) != 0 {
 		t.Fatalf("public concealed kong event must hide tile faces, got %v", ev.Meld.Tiles)
+	}
+}
+
+func TestNewHandsRevealedEvent_RevealsConcealedKongsAndClones(t *testing.T) {
+	t.Parallel()
+
+	concealed := map[rules.Seat][]rules.Tile{
+		rules.Seat1: {rules.Wan1, rules.Wan2},
+		rules.Seat2: {rules.Suo3},
+		rules.Seat3: {rules.Tong4},
+		rules.Seat4: {rules.EastWind},
+	}
+	melds := map[rules.Seat][]rules.Meld{
+		rules.Seat2: {
+			{
+				Kind:  rules.MeldConcealedKong,
+				Tiles: []rules.Tile{rules.WhiteDragon, rules.WhiteDragon, rules.WhiteDragon, rules.WhiteDragon},
+			},
+		},
+	}
+
+	ev := rules.NewHandsRevealedEvent(concealed, melds)
+	// Mutating inputs after construction must not affect event payload.
+	concealed[rules.Seat1][0] = rules.Wan9
+	melds[rules.Seat2][0].Tiles[0] = rules.GreenDragon
+
+	if ev.Audience() != rules.AudiencePublic {
+		t.Fatalf("Audience() = %v, want AudiencePublic", ev.Audience())
+	}
+	s1 := ev.Seats[rules.Seat1]
+	if len(s1.Concealed) != 2 || s1.Concealed[0] != rules.Wan1 {
+		t.Fatalf("Seat1 concealed = %v, want defensive copy starting with Wan1", s1.Concealed)
+	}
+	s2 := ev.Seats[rules.Seat2]
+	if len(s2.Melds) != 1 || s2.Melds[0].Kind != rules.MeldConcealedKong || len(s2.Melds[0].Tiles) != 4 || s2.Melds[0].Tiles[0] != rules.WhiteDragon {
+		t.Fatalf("Seat2 revealed concealed kong = %+v, want 4x WhiteDragon", s2.Melds)
 	}
 }
