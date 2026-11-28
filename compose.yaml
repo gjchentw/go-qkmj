@@ -1,0 +1,124 @@
+services:
+  rqlite-1:
+    image: rqlite/rqlite:8
+    command:
+      - -node-id=rqlite-1
+      - -http-addr=0.0.0.0:4001
+      - -http-adv-addr=rqlite-1:4001
+      - -raft-addr=0.0.0.0:4002
+      - -raft-adv-addr=rqlite-1:4002
+      - /rqlite/file/data
+    ports:
+      - "4001:4001"
+    volumes:
+      - rqlite1-data:/rqlite/file/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:4001/readyz || wget -qO- http://127.0.0.1:4001/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  qkmj:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      rqlite-1:
+        condition: service_healthy
+    environment:
+      QKMJ_STORE_DRIVER: rqlite
+      QKMJ_STORE_DSN: http://rqlite-1:4001
+      QKMJ_RQLITE_CONSISTENCY: weak
+      QKMJ_NODE_NAME: ${QKMJ_NODE_NAME:-qkmj-node-1}
+      QKMJ_HEALTH_ADDR: ":8081"
+    ports:
+      - "8081:8081"
+    restart: unless-stopped
+
+  rqlite-2:
+    image: rqlite/rqlite:8
+    profiles: ["ha"]
+    depends_on:
+      rqlite-1:
+        condition: service_healthy
+    command:
+      - -node-id=rqlite-2
+      - -http-addr=0.0.0.0:4001
+      - -http-adv-addr=rqlite-2:4001
+      - -raft-addr=0.0.0.0:4002
+      - -raft-adv-addr=rqlite-2:4002
+      - -join=http://rqlite-1:4001
+      - /rqlite/file/data
+    volumes:
+      - rqlite2-data:/rqlite/file/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:4001/readyz || wget -qO- http://127.0.0.1:4001/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  rqlite-3:
+    image: rqlite/rqlite:8
+    profiles: ["ha"]
+    depends_on:
+      rqlite-1:
+        condition: service_healthy
+    command:
+      - -node-id=rqlite-3
+      - -http-addr=0.0.0.0:4001
+      - -http-adv-addr=rqlite-3:4001
+      - -raft-addr=0.0.0.0:4002
+      - -raft-adv-addr=rqlite-3:4002
+      - -join=http://rqlite-1:4001
+      - /rqlite/file/data
+    volumes:
+      - rqlite3-data:/rqlite/file/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:4001/readyz || wget -qO- http://127.0.0.1:4001/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  qkmj-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["ha"]
+    depends_on:
+      rqlite-2:
+        condition: service_healthy
+    environment:
+      QKMJ_STORE_DRIVER: rqlite
+      QKMJ_STORE_DSN: http://rqlite-2:4001,http://rqlite-1:4001,http://rqlite-3:4001
+      QKMJ_RQLITE_CONSISTENCY: weak
+      QKMJ_NODE_NAME: qkmj-node-2
+      QKMJ_HEALTH_ADDR: ":8081"
+    ports:
+      - "8082:8081"
+    restart: unless-stopped
+
+  qkmj-3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["ha"]
+    depends_on:
+      rqlite-3:
+        condition: service_healthy
+    environment:
+      QKMJ_STORE_DRIVER: rqlite
+      QKMJ_STORE_DSN: http://rqlite-3:4001,http://rqlite-1:4001,http://rqlite-2:4001
+      QKMJ_RQLITE_CONSISTENCY: weak
+      QKMJ_NODE_NAME: qkmj-node-3
+      QKMJ_HEALTH_ADDR: ":8081"
+    ports:
+      - "8083:8081"
+    restart: unless-stopped
+
+volumes:
+  rqlite1-data:
+  rqlite2-data:
+  rqlite3-data:

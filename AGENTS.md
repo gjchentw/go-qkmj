@@ -37,7 +37,7 @@ Project instructions and workflow orchestration for `go-qkmj`.
    - `internal/store` exposes semantic atomic operations only (e.g., `SettleHand`); NEVER leak `*sql.Tx` to business layers so deployments stay compatible with `rqlite` atomic batch transactions. Avoid high-frequency DB heartbeat writes.
    - Use pure-Go SQLite (`modernc.org/sqlite`) for local dev/tests and `rqlite` (1-node to 3-node Raft HA) for production.
 5. **Security Baseline**:
-   - Hash passwords with `bcrypt` (cost >= 12); NEVER concatenate SQL strings; NEVER pass user input to `os/exec`; validate all external inputs at system boundaries.
+   - Hash passwords with `Argon2id` (OWASP memory-hard parameters, PHC format, constant-time comparison); NEVER concatenate SQL strings; NEVER pass user input to `os/exec`; validate all external inputs at system boundaries.
 6. **Upstream Reference (`../qkmj`)**:
    - Treat `../qkmj` (`openspec` branch) as a read-only reference oracle (`qkmj-rules/*` aligns closely; `qkmj-ux/*` MUST be adapted for native Unicode and Server-Side TUI). NEVER bulk-copy unimplemented specs into `openspec/specs/`.
 
