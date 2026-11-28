@@ -124,7 +124,7 @@ func (a PlayerAction) validateClaim() error {
 	if !a.Claim.Valid() {
 		return fmt.Errorf("claim %d: %w", a.Claim, ErrInvalidAction)
 	}
-	if a.Claim == ClaimChow {
+	if a.Claim == ClaimChow && a.Chow != (ChowOption{}) {
 		if err := a.Chow.Validate(); err != nil {
 			return fmt.Errorf("chow option: %w: %w", err, ErrInvalidAction)
 		}
